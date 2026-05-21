@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual env
+.venv/
+venv/
+
+# Caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Streamlit
+.streamlit/credentials.toml
+streamlit.out.log
+streamlit.err.log
+
+# Env / secrets
+.env
+.env.9router
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Outputs (kept locally only)
+outputs/history/
+outputs/lora_datasets/
+outputs/lora_jobs.jsonl
+outputs/history.jsonl
+outputs/gpt gen/
+outputs/inputs/
+outputs/*.png
+outputs/*.jpg
+outputs/*.jpeg
+outputs/*.webp
+
+# Logs (local only, regenerated on each run)
+*.log
+desktop_out.log
+desktop_err.log
+streamlit_*.log
+
+# Local working scratch files
+_extract_*.txt
+_test_*.py
+_smoke_*.py
+_health_*.ps1
