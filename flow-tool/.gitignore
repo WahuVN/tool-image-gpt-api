@@ -1,0 +1,9 @@
+# Bi mat / runtime - KHONG commit
+accounts.json
+flow_cookie.txt
+worker_data/
+login_data/
+accounts_data/
+output/
+__pycache__/
+*.pyc
