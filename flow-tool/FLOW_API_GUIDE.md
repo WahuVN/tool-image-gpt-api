@@ -171,6 +171,38 @@ python flow_proxy_multi.py
 
 > Cookie sống theo phiên đăng nhập. Khi acc báo 401/“cần đăng nhập” → bấm Đăng nhập + Kiểm tra lại.
 
+### 4.5. Nạp cookie THỦ CÔNG — không cần mở trình duyệt (khuyên dùng khi 401)
+
+Khi acc báo `401 createProject` / `Hết acc khỏe` / `chưa đăng nhập/cookie` nghĩa là
+**cookie hết hạn**. Thay vì mở trình duyệt đăng nhập lại trong tool, chỉ cần lấy cookie
+mới từ trình duyệt đã đăng nhập Flow rồi nạp thẳng vào:
+
+**Lấy cookie** (1 trong 2 cách):
+- DevTools (F12) ▸ tab **Network** ▸ tải lại trang Flow ▸ chọn 1 request tới `labs.google`
+  ▸ **Headers** ▸ copy toàn bộ giá trị **Cookie**.
+- Hoặc cài extension **Cookie-Editor** ▸ vào labs.google ▸ **Export** (JSON).
+
+**Nạp cookie** (1 trong 3 cách):
+1. **Thả file**: lưu cookie thành `cookies/<tên-acc>.txt` (hoặc `.json`). Proxy tự nạp khi
+   khởi động / mở `/accounts` / bấm "📂 Nạp từ thư mục".
+2. **Trang `/accounts`**: card **"📥 Nạp cookie trực tiếp"** → điền tên acc + dán cookie → **Nạp**.
+   Hoặc bấm **📥 Nạp cookie** ở dòng acc để điền sẵn tên.
+3. **CLI** (không cần web):
+   ```bash
+   python flow_cookies_cli.py import flow01 --file cookies\flow01.txt
+   python flow_cookies_cli.py import flow01 --clip   # đọc từ clipboard
+   python flow_cookies_cli.py reload                 # nạp mọi file trong cookies/
+   python flow_cookies_cli.py list                   # xem acc + trạng thái
+   python flow_cookies_cli.py log -n 50              # xem log
+   ```
+
+> Bắt buộc có cookie `__Secure-next-auth.session-token` (domain `labs.google`) thì acc mới
+> `ready`. Token reCAPTCHA vẫn lấy qua worker trình duyệt nền (không tránh được), nhưng phần
+> đăng nhập/cookie thì hết phải thao tác trên tab web.
+
+**Log**: mọi sự kiện (nạp cookie, cooldown, vẽ ảnh, lỗi) ghi ra `flow-tool/flow.log`
+và xem được qua `GET /api/logs?n=200` hoặc nút "📜 Xem log".
+
 ---
 
 ## 5. Endpoint của proxy (port 8790)
@@ -179,12 +211,16 @@ python flow_proxy_multi.py
 |--------|------|---------|
 | GET | `/v1/models`, `/v1/models/image` | liệt kê model (`NARWHAL`, `flow`) |
 | GET | `/api/health` | trạng thái + số acc sẵn sàng |
+| GET | `/api/logs?n=200` | xem log gần đây |
 | POST | `/v1/images/generations` | tạo ảnh (OpenAI format, trả `b64_json` hoặc `binary`) |
 | GET | `/accounts` | trang quản lý acc |
 | GET | `/api/accounts` | danh sách acc + trạng thái |
 | GET | `/api/accounts/browsers` | liệt kê trình duyệt + profile có sẵn |
 | GET | `/api/accounts/{id}/status` | email + điểm/quota |
 | POST | `/api/accounts` | thêm acc `{name,browser,mode,profile_directory}` |
+| POST | `/api/accounts/import` | **nạp cookie** `{name,raw}` (tạo acc nếu chưa có) |
+| POST | `/api/accounts/{id}/cookies` | **nạp cookie** cho acc có sẵn `{raw}` |
+| POST | `/api/accounts/reload-cookies` | nạp mọi file trong `cookies/` |
 | POST | `/api/accounts/{id}/login` `/check` `/enable` `/disable` | đăng nhập / lưu cookie / bật / tắt |
 | DELETE | `/api/accounts/{id}` | xoá acc |
 

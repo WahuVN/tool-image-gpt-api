@@ -17,6 +17,7 @@ from urllib import parse
 
 from flow_accounts import AccountManager, list_existing_profiles, BROWSERS, find_browser_exe
 from flow_multi import MultiFlow
+from flow_log import log as flog, tail as log_tail
 
 PORT = int(os.environ.get("FLOW_PROXY_PORT", "8790"))
 MAX_WORKERS = int(os.environ.get("FLOW_MAX_WORKERS", "4"))
@@ -95,6 +96,7 @@ class Handler(BaseHTTPRequestHandler):
     # ----------------------------------------------------------- GET
     def do_GET(self):
         path = parse.urlparse(self.path).path.rstrip("/") or "/"
+        qs_get = dict(parse.parse_qsl(parse.urlparse(self.path).query))
         if path in ("/v1/models", "/v1/models/image"):
             self._json({"object": "list", "data": [
                 {"id": m, "object": "model", "owned_by": "google-flow"} for m in IMAGE_MODELS]})
@@ -107,8 +109,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/accounts", "/"):
             self._html(_page_html())
         elif path == "/api/accounts":
+            try:
+                mgr.autoload_cookie_files()
+            except Exception:
+                pass
             self._json({"accounts": mgr.states(),
                         "ready": len(mgr.healthy_accounts())})
+        elif path in ("/api/logs", "/logs"):
+            try:
+                n = int(qs_get.get("n", "200"))
+            except Exception:
+                n = 200
+            self._json({"lines": log_tail(n)})
         elif path == "/api/accounts/browsers":
             out = {}
             for b in BROWSERS:
@@ -142,11 +154,27 @@ class Handler(BaseHTTPRequestHandler):
                                   profile_directory=d.get("profile_directory", "Default"))
             return self._json({"ok": True, "account": acc.public_state()})
 
+        if path == "/api/accounts/import":
+            d = self._body()
+            return self._json(mgr.add_or_update_with_cookies(
+                name=(d.get("name") or "").strip(),
+                raw=d.get("raw") or d.get("cookie") or d.get("cookies") or "",
+                browser=d.get("browser", "manual"),
+                mode=d.get("mode", "manual")))
+
+        if path == "/api/accounts/reload-cookies":
+            n = mgr.autoload_cookie_files()
+            return self._json({"ok": True, "loaded": n})
+
         # /api/accounts/{id}/{action}
         parts = path.strip("/").split("/")
         if len(parts) >= 3 and parts[0] == "api" and parts[1] == "accounts":
             acc_id = parts[2]
             action = parts[3] if len(parts) >= 4 else ""
+            if action == "cookies":
+                d = self._body()
+                return self._json(mgr.import_cookies(
+                    acc_id, d.get("raw") or d.get("cookie") or d.get("cookies") or ""))
             if action == "login":
                 return self._json(mgr.login_account(acc_id))
             if action == "check":
@@ -182,7 +210,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             t0 = time.time()
             images = multi.generate(prompt, model, aspect, n=n, seed=seed)
-            print(f"[gen] n={n} -> {len(images)} ảnh / {time.time()-t0:.1f}s")
+            flog(f"gen n={n} -> {len(images)} anh / {time.time()-t0:.1f}s | {prompt[:60]}", "gen")
             if not images:
                 return self._json({"error": {"message": "Không tạo được ảnh"}}, 502)
             if rf == "binary":
@@ -191,11 +219,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"created": int(time.time()), "data": data})
         except Exception as e:
             print(f"[gen] LỖI: {e}")
+            flog(f"gen LỖI: {e}", "gen")
             self._json({"error": {"message": str(e)}}, 502)
 
 
 def main():
     print(f"[Flow Multi] {len(mgr.accounts)} acc trong cấu hình.")
+    try:
+        n = mgr.autoload_cookie_files()
+        if n:
+            print(f"[Flow Multi] Đã tự nạp cookie từ {n} file trong cookies/.")
+    except Exception:
+        pass
+    flog(f"khởi động proxy: {len(mgr.accounts)} acc, {len(mgr.healthy_accounts())} sẵn sàng", "boot")
     print("[Flow Multi] (Acc khởi động khi bạn bấm 'Mở'/'Đăng nhập' hoặc khi có request vẽ.)")
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"[Flow Multi] Sẵn sàng: http://127.0.0.1:{PORT}")

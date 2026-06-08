@@ -22,8 +22,19 @@ import urllib.request
 import pathlib
 from typing import Optional, List, Dict, Any
 
+try:
+    import cookie_import
+    from flow_log import log as _flog
+except Exception:  # fallback nếu chạy lẻ
+    cookie_import = None
+    def _flog(msg, tag="info"):
+        print(f"[{tag}] {msg}")
+
 HERE = pathlib.Path(__file__).parent
 ACCOUNTS_FILE = HERE / "accounts.json"
+COOKIES_DIR = HERE / "cookies"          # thả file cookie vào đây để tự nạp
+COOKIES_DIR.mkdir(exist_ok=True)
+(COOKIES_DIR / "imported").mkdir(exist_ok=True)
 WORKER_DATA = HERE / "worker_data"
 WORKER_DATA.mkdir(exist_ok=True)
 LOGIN_DATA = HERE / "login_data"   # user-data-dir cho login dedicated
@@ -204,6 +215,11 @@ class AccountManager:
                     self.accounts.append(Account(d))
             except Exception as e:
                 print("[accounts] load error:", e)
+        # Tự nạp cookie từ file thả vào thư mục cookies/
+        try:
+            self.autoload_cookie_files()
+        except Exception as e:
+            _flog(f"autoload error: {e}", "cookie")
 
     def save(self):
         ACCOUNTS_FILE.write_text(json.dumps(
@@ -230,6 +246,70 @@ class AccountManager:
         acc = self.get(acc_id)
         if acc:
             acc.enabled = enabled; self.save()
+
+    # ----- NẠP COOKIE THỦ CÔNG (không cần mở trình duyệt) -----
+    def import_cookies(self, acc_id, raw):
+        """Nạp cookie cho 1 acc từ chuỗi header / JSON / Netscape."""
+        if cookie_import is None:
+            return {"ok": False, "error": "Thiếu module cookie_import"}
+        acc = self.get(acc_id)
+        if not acc:
+            return {"ok": False, "error": "Không tìm thấy acc"}
+        cookies = cookie_import.parse_cookies(raw)
+        if not cookies:
+            return {"ok": False, "error": "Không parse được cookie nào"}
+        acc.cookies = cookies
+        has_sess = cookie_import.has_session(cookies)
+        acc.status = "ready" if has_sess else "login_needed"
+        if has_sess:
+            acc.cooldown_until = 0
+            acc.failures = 0
+            acc.last_error = ""
+        else:
+            acc.last_error = "Thiếu __Secure-next-auth.session-token (labs.google)"
+        self.save()
+        _flog(f"import cookie -> {acc.name}: {len(cookies)} cookie, session={has_sess}", "cookie")
+        return {"ok": True, "logged_in": acc.logged_in, "count": len(cookies),
+                "has_session": has_sess, "account": acc.public_state()}
+
+    def add_or_update_with_cookies(self, name, raw, browser="manual", mode="manual"):
+        """Tạo acc mới (nếu chưa có) rồi nạp cookie. Trùng tên -> cập nhật."""
+        name = (name or "").strip()
+        if not name:
+            return {"ok": False, "error": "Thiếu tên acc"}
+        acc = next((a for a in self.accounts if a.name == name or a.id == name), None)
+        if not acc:
+            acc = self.add_account(name=name, browser=browser, mode=mode)
+        return self.import_cookies(acc.id, raw)
+
+    def autoload_cookie_files(self):
+        """Quét thư mục cookies/ : mỗi file <tên>.txt|.json -> nạp cho acc cùng tên,
+        nạp xong chuyển vào cookies/imported/. Trả về số file đã nạp."""
+        if cookie_import is None:
+            return 0
+        loaded = 0
+        for f in list(COOKIES_DIR.glob("*.txt")) + list(COOKIES_DIR.glob("*.json")):
+            if f.stem.lower() in ("readme", "readme.txt") or f.stem.startswith("_"):
+                continue
+            try:
+                raw = f.read_text(encoding="utf-8", errors="ignore").strip()
+                if not raw:
+                    continue
+                res = self.add_or_update_with_cookies(f.stem, raw)
+                if res.get("ok"):
+                    loaded += 1
+                    dest = COOKIES_DIR / "imported" / f"{f.stem}_{int(time.time())}{f.suffix}"
+                    try:
+                        f.replace(dest)
+                    except Exception:
+                        pass
+                    _flog(f"autoload {f.name}: {res.get('count')} cookie, "
+                          f"session={res.get('has_session')}", "cookie")
+                else:
+                    _flog(f"autoload {f.name} LỖI: {res.get('error')}", "cookie")
+            except Exception as e:
+                _flog(f"autoload {f.name} EXC: {e}", "cookie")
+        return loaded
 
     # ----- launch helper -----
     def _close_browser_procs(self, browser):
@@ -433,6 +513,9 @@ class AccountManager:
         if quota or acc.failures >= 2:
             acc.cooldown_until = time.time() + COOLDOWN_SECONDS
             acc.status = "cooldown"
+            _flog(f"{acc.name} -> cooldown {COOLDOWN_SECONDS}s ({reason[:80]})", "acc")
+        else:
+            _flog(f"{acc.name} lỗi (#{acc.failures}): {reason[:80]}", "acc")
 
     def start_all_enabled(self, headless=False):
         # với mô hình v2 không cần mở trình duyệt acc; chỉ cần đã có cookie

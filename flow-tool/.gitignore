@@ -7,3 +7,9 @@ accounts_data/
 output/
 __pycache__/
 *.pyc
+# Cookie nap thu cong + log (bi mat / runtime) - KHONG commit
+flow.log
+cookies/*.txt
+cookies/*.json
+cookies/imported/
+!cookies/README.txt

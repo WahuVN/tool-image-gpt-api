@@ -41,6 +41,23 @@ table{width:100%;border-collapse:collapse;margin-top:8px} th,td{text-align:left;
 </div>
 
 <div class="card">
+  <b>📥 Nạp cookie trực tiếp (KHÔNG cần mở trình duyệt)</b>
+  <div class="muted" style="margin:6px 0">Dán cookie labs.google: chuỗi header <code>name=value; ...</code> (DevTools ▸ Network ▸ request labs.google ▸ Cookie), hoặc JSON export từ extension <b>Cookie-Editor</b>, hoặc cookies.txt. Cần có <code>__Secure-next-auth.session-token</code>. Hoặc thả file <code>&lt;tên&gt;.txt</code>/<code>.json</code> vào thư mục <code>cookies/</code> rồi bấm "Nạp từ thư mục".</div>
+  <div class="row">
+    <input id="imp_name" placeholder="Tên acc (mới hoặc đã có)" style="min-width:200px">
+    <button class="gray" onclick="reloadCookies()">📂 Nạp từ thư mục cookies/</button>
+    <button class="gray" onclick="showLog()">📜 Xem log</button>
+  </div>
+  <textarea id="imp_raw" placeholder="Dán cookie vào đây..." style="width:100%;min-height:90px;margin-top:8px;font:13px monospace;padding:8px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#e2e8f0"></textarea>
+  <div class="row" style="margin-top:8px"><button class="green" onclick="importCookie()">Nạp / Cập nhật cookie</button></div>
+</div>
+
+<div class="card" id="logcard" style="display:none">
+  <div class="row" style="justify-content:space-between"><b>📜 Log</b><button class="gray" onclick="document.getElementById('logcard').style.display='none'">Đóng</button></div>
+  <pre id="logbox" style="max-height:280px;overflow:auto;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap"></pre>
+</div>
+
+<div class="card">
   <div class="row" style="justify-content:space-between">
     <b>📋 Danh sách tài khoản</b>
     <button class="gray" onclick="load()">↻ Làm mới</button>
@@ -76,6 +93,19 @@ function badge(s){const m={ready:['b-ready','sẵn sàng'],login_needed:['b-logi
 async function act(m,u){await api(m,u);load();}
 async function login(id){const r=await api('POST','/api/accounts/'+id+'/login');alert(r.message||r.error||'Đã mở cửa sổ. Đăng nhập xong bấm Kiểm tra.');load();}
 async function check(id){const r=await api('POST','/api/accounts/'+id+'/check');alert(r.logged_in?'✓ Đã đăng nhập Flow':'✗ Chưa đăng nhập');load();}
+async function importCookie(){
+  const name=document.getElementById('imp_name').value.trim();
+  const raw=document.getElementById('imp_raw').value.trim();
+  if(!name){alert('Nhập tên acc');return;}
+  if(!raw){alert('Dán cookie vào ô bên dưới');return;}
+  const r=await api('POST','/api/accounts/import',{name,raw});
+  if(!r.ok){alert('Lỗi: '+(r.error||'?'));return;}
+  alert((r.has_session?'✓ ':'⚠ ')+'Đã nạp '+r.count+' cookie cho "'+name+'".'+(r.has_session?' Acc sẵn sàng.':' THIẾU session-token → chưa dùng được.'));
+  document.getElementById('imp_raw').value='';load();
+}
+function prefillImport(name){document.getElementById('imp_name').value=name;document.getElementById('imp_raw').focus();window.scrollTo(0,0);}
+async function reloadCookies(){const r=await api('POST','/api/accounts/reload-cookies');alert('Đã nạp từ '+ (r.loaded||0) +' file trong thư mục cookies/.');load();}
+async function showLog(){const r=await api('GET','/api/logs?n=200');document.getElementById('logbox').textContent=(r.lines||[]).join('\n')||'(trống)';document.getElementById('logcard').style.display='';}
 async function status(id){
   const r=await api('GET','/api/accounts/'+id+'/status');const s=r.status||{};
   let msg='Email: '+(s.email||'?')+'\nĐăng nhập: '+(s.logged_in?'có':'không')+'\nHết hạn phiên: '+(s.expires||'?')+'\nĐiểm/Quota: '+JSON.stringify(s.credits);
@@ -94,6 +124,7 @@ async function load(){
       '<td>'+a.uses+' / '+a.failures+'</td>'+
       '<td class="row">'+
         '<button class="green" onclick="login(\''+a.id+'\')">Đăng nhập</button>'+
+        '<button class="gray" onclick="prefillImport(\''+a.name+'\')">📥 Nạp cookie</button>'+
         '<button class="gray" onclick="check(\''+a.id+'\')">Kiểm tra</button>'+
         '<button class="gray" onclick="status(\''+a.id+'\')">Điểm/Quota</button>'+
         '<button class="gray" onclick="act(\'POST\',\'/api/accounts/'+a.id+'/start\')">Mở</button>'+
