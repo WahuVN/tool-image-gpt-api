@@ -7,6 +7,19 @@ from pathlib import Path
 from typing import Any
 from urllib import parse, request, error
 
+CPAB_IMAGE_MODELS = [
+    "gpt-image-2",
+]
+
+CPAB_CHAT_MODELS = [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+]
+
+CPAB_ALLOWED_MODELS = CPAB_CHAT_MODELS + CPAB_IMAGE_MODELS
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -25,7 +38,7 @@ def load_env_file(env_file: Path) -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key:
             os.environ[key] = value
 
 
@@ -46,7 +59,7 @@ def build_url(base_url: str, path: str, query: dict[str, Any] | None = None) -> 
 
 
 def build_headers(api_key: str | None = None) -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "curl/8.13.0"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
@@ -87,15 +100,86 @@ def http_post(url: str, payload: dict[str, Any], api_key: str | None = None) -> 
     return body, content_type
 
 
+def is_cpab_base_url(base_url: str) -> bool:
+    return "cpab.hiennq.dev" in str(base_url or "").lower()
+
+
+def is_cpab_chat_model(model_id: str) -> bool:
+    return str(model_id or "").strip().lower() in {item.lower() for item in CPAB_CHAT_MODELS}
+
+
+def decode_data_image_url(url: str) -> tuple[bytes, str] | None:
+    clean = str(url or "").strip()
+    if not clean.lower().startswith("data:image/") or "," not in clean:
+        return None
+    header, encoded = clean.split(",", 1)
+    content_type = header[5:].split(";", 1)[0] or "image/png"
+    return base64.b64decode(encoded), content_type
+
+
+def build_cpab_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    prompt = str(payload.get("prompt", "") or "").strip() or "Generate an image."
+    details = []
+    for key in ("size", "quality", "style"):
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            details.append(f"{key}: {value}")
+    if details:
+        prompt = f"{prompt}\n\nGeneration settings: {', '.join(details)}"
+    return {
+        "model": str(payload.get("model", "")).strip(),
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": float(payload.get("temperature", 0.7) or 0.7),
+        "max_tokens": int(payload.get("max_tokens", 500) or 500),
+    }
+
+
+def cmd_generate_cpab_chat(
+    base_url: str,
+    api_key: str | None,
+    payload: dict[str, Any],
+    output_file: Path,
+    response_format: str,
+) -> int:
+    body, _ = http_post(build_url(base_url, "/v1/chat/completions"), build_cpab_chat_payload(payload), api_key)
+    parsed = json.loads(body.decode("utf-8"))
+    choices = parsed.get("choices", [])
+    message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+    images = message.get("images", []) if isinstance(message, dict) else []
+    for image_item in images:
+        image_url = image_item.get("image_url", {}) if isinstance(image_item, dict) else {}
+        url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+        decoded = decode_data_image_url(url)
+        if decoded:
+            image_bytes, content_type = decoded
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_bytes(image_bytes)
+            print(f"Đã lưu ảnh: {output_file.resolve()}")
+            print(f"Content-Type: {content_type}")
+            return 0
+        if url and response_format == "url":
+            print("Image URL:")
+            print(url)
+            return 0
+    print("CPAB chat completion không trả ảnh trong message.images.")
+    print(json.dumps(parsed, ensure_ascii=False, indent=2)[:2000])
+    return 1
+
+
 def cmd_discover(base_url: str, api_key: str | None) -> int:
-    data = http_get_json(build_url(base_url, "/v1/models/image"), api_key)
+    try:
+        data = http_get_json(build_url(base_url, "/v1/models/image"), api_key)
+    except Exception:
+        data = http_get_json(build_url(base_url, "/v1/models"), api_key)
     models = data.get("data", [])
+    allowed = {item.lower() for item in CPAB_CHAT_MODELS}
+    models = [item for item in models if str(item.get("id", "")).lower() in allowed]
 
     if not models:
-        print("Không tìm thấy model image nào.")
+        print("Không tìm thấy model chat nào.")
         return 0
 
-    print("Danh sách model image:")
+    print("Danh sách model chat:")
     for item in models:
         model_id = item.get("id", "")
         print(f"- {model_id}")
@@ -144,6 +228,9 @@ def cmd_generate(
         if not isinstance(extra, dict):
             raise ValueError("--extra-json phải là JSON object.")
         payload.update(extra)
+
+    if is_cpab_base_url(base_url) and is_cpab_chat_model(model):
+        return cmd_generate_cpab_chat(base_url, api_key, payload, output_file, response_format)
 
     endpoint = build_url(base_url, "/v1/images/generations")
     if response_format == "binary":

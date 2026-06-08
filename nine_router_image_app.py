@@ -10,6 +10,8 @@ import os
 import random
 import re
 import socket
+import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -62,7 +64,8 @@ HISTORY_DAILY_ROOT = Path("outputs/history")
 LORA_HISTORY_FILE = Path("outputs/lora_jobs.jsonl")
 LORA_DATASET_ROOT = Path("outputs/lora_datasets")
 DEFAULT_ENV_FILE = ".env.9router"
-DEFAULT_MODEL = "cx/gpt-5.4-image"
+DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_IMAGE_MODEL = "gpt-image-2"
 MODE_SINGLE_API = "Thường (1 request)"
 MODE_AUTO_API = "Tự động (nhiều key = song song)"
 MODE_PARALLEL_API = "Chia nhiều API (song song)"
@@ -76,12 +79,12 @@ MULTI_API_MODES = [
 QUICK_COUNT_OPTIONS = [1, 4, 8, 16, 32]
 MAX_PARALLEL_WORKERS = 60
 DEFAULT_API_GET_TIMEOUT_SECONDS = 180
-DEFAULT_API_POST_TIMEOUT_SECONDS = 300
+DEFAULT_API_POST_TIMEOUT_SECONDS = 480
+MIN_API_POST_TIMEOUT_SECONDS = 120
 DEFAULT_IMAGE_RETRY_COUNT = 2
 DEFAULT_IMAGE_RETRY_BACKOFF_SECONDS = 1.4
 MAX_IMAGE_RETRY_COUNT = 5
 MAX_API_TIMEOUT_SECONDS = 900
-DEFAULT_ENABLE_EXPERIMENTAL_PASTE_COMPONENT = False
 QUICK_RATIO_OPTIONS = ["Mặc định", "1:1", "16:9", "9:16", "4:5", "3:2"]
 QUICK_STYLE_OPTIONS = [
     "Mặc định",
@@ -249,10 +252,14 @@ QUICK_UNIVERSAL_POWER_PRESETS = {
 }
 QUICK_OPERATION_OPTIONS = [
     "Tạo ảnh",
+    "Vẽ art game Tu Tiên Cờ",
+    "Vẽ asset game (không nền)",
     "AI đa năng (copy ảnh + lệnh tự do)",
     "Làm truyện tranh",
     "Sửa ảnh nâng cao",
     "Sửa ảnh",
+    "Phân tích & tách nền",
+    "Xóa nền chroma",
     "Nâng cấp chất lượng",
     "Dịch ảnh",
     "Sao chép phong cách",
@@ -279,7 +286,6 @@ CHARACTER_DETAIL_TEMPLATES = {
 
 PAGE_HOME = "🏠 Tổng quan"
 PAGE_DRAW = "🎨 Studio"
-PAGE_PRESET = "✨ Preset"
 PAGE_TRAIN = "🧬 Train LoRA"
 PAGE_MODEL = "🧠 Model"
 PAGE_GALLERY = "🖼️ Thư viện"
@@ -288,37 +294,25 @@ PAGE_CONFIG = "⚙️ Cài đặt"
 PAGE_OPTIONS = [
     PAGE_HOME,
     PAGE_DRAW,
-    PAGE_PRESET,
     PAGE_TRAIN,
     PAGE_MODEL,
     PAGE_GALLERY,
     PAGE_CONFIG,
 ]
 
-PAGE_OPTIONS_BASIC = [
-    PAGE_HOME,
-    PAGE_DRAW,
-    PAGE_TRAIN,
-    PAGE_GALLERY,
-]
 
-PAGE_OPTIONS_ADVANCED = [
-    PAGE_PRESET,
-    PAGE_MODEL,
-    PAGE_CONFIG,
-]
 
 SIZE_PRESETS = {
-    "Vu\u00f4ng 1024": "1024x1024",
-    "Vu\u00f4ng 1536": "1536x1536",
+    "Vuông 1024": "1024x1024",
+    "Vuông 1536": "1536x1536",
     "Ngang 3:2": "1536x1024",
     "Ngang 16:9": "1792x1024",
-    "D\u1ecdc 2:3": "1024x1536",
-    "D\u1ecdc 9:16": "1024x1792",
-    "B\u00e0i \u0111\u0103ng MXH": "1080x1080",
+    "Dọc 2:3": "1024x1536",
+    "Dọc 9:16": "1024x1792",
+    "Bài đăng MXH": "1080x1080",
     "Story/Reel": "1080x1920",
     "Wallpaper 4K": "3840x2160",
-    "T\u00f9y ch\u1ec9nh": "",
+    "Tùy chỉnh": "",
 }
 
 ASPECT_RATIO_ORIGINAL = "Nguyên gốc theo ảnh mẫu"
@@ -333,6 +327,54 @@ BACKGROUND_OPTIONS = ["", "transparent", "opaque", "blurred"]
 OUTPUT_FORMAT_OPTIONS = ["", "png", "jpeg", "webp"]
 IMAGE_DETAIL_OPTIONS = ["", "low", "medium", "high"]
 SAMPLER_OPTIONS = ["", "euler", "euler_a", "ddim", "dpmpp_2m", "heun"]
+TRANSPARENT_IMAGE_MODE = "RGBA"
+TRANSPARENT_RGBA_COLOR = (0, 0, 0, 0)
+TRANSPARENT_BACKGROUND_PROMPT_RULE = (
+    "Required transparent background output: real PNG alpha channel, image mode RGBA, "
+    "outside the subject must be fully transparent RGBA(0,0,0,0); no white background, "
+    "no black background, no colored background, no checkerboard, no scenery unless explicitly requested."
+)
+TRANSPARENT_BACKGROUND_NEGATIVE_RULE = (
+    "white background, black background, colored background, solid background, checkerboard background, "
+    "opaque background, scenery background, room, wall, floor"
+)
+GREEN_SCREEN_RGB = (0, 255, 0)
+GREEN_SCREEN_HEX = "#00FF00"
+GREEN_SCREEN_PAYLOAD_FLAG = "_green_screen_remove_background"
+GREEN_SCREEN_PROMPT_RULE = (
+    "Use a single flat pure chroma key green background (#00FF00, RGB 0,255,0) behind the subject. "
+    "The green background must be uniform, untextured, evenly lit, with no gradient, no scenery, no props, "
+    "no floor, no wall, no pattern, no cast shadow on the green background. Fill every gap around and between limbs/hair/tail "
+    "with the exact same flat #00FF00 green so chroma key removal can delete it. Keep the subject fully separated from the green."
+)
+GREEN_SCREEN_NEGATIVE_RULE = (
+    "transparent background, white background, black background, gray background, checkerboard, scenery, room, wall, floor, "
+    "gradient background, dark green patches, uneven green, grass, leaves, green glow spilling onto subject, green clothes unless explicitly requested"
+)
+BLUE_SCREEN_RGB = (0, 0, 255)
+BLUE_SCREEN_HEX = "#0000FF"
+BLUE_SCREEN_PAYLOAD_FLAG = "_blue_screen_remove_background"
+BLUE_SCREEN_PROMPT_RULE = (
+    "Use a single flat pure chroma key blue background (#0000FF, RGB 0,0,255) behind the subject. "
+    "The blue background must be uniform, untextured, evenly lit, with no gradient, no scenery, no props, "
+    "no floor, no wall, no pattern, no cast shadow on the blue background. Fill every gap around and between limbs/hair/tail "
+    "with the exact same flat #0000FF blue so chroma key removal can delete it. Keep the subject fully separated from the blue."
+)
+BLUE_SCREEN_NEGATIVE_RULE = (
+    "transparent background, white background, black background, gray background, checkerboard, scenery, room, wall, floor, "
+    "gradient background, dark blue patches, uneven blue, sky, ocean, water, blue glow spilling onto subject, blue clothes unless explicitly requested"
+)
+MAGENTA_SCREEN_RGB = (255, 0, 255)
+MAGENTA_SCREEN_HEX = "#FF00FF"
+GPT_IMAGE_QUALITY_VALUES = {"low", "medium", "high", "auto"}
+GPT_IMAGE_QUALITY_ALIASES = {
+    "standard": "medium",
+    "normal": "medium",
+    "balanced": "medium",
+    "hd": "high",
+    "ultra": "high",
+}
+TRANSPARENT_DEFAULT_QUALITY = "medium"
 
 QUALITY_PROFILES = {
     "Nhanh": {
@@ -349,14 +391,14 @@ QUALITY_PROFILES = {
         "cfg_scale": 6.0,
         "prompt_suffix": "high detail, refined lighting",
     },
-    "Ch\u1ea5t l\u01b0\u1ee3ng cao (HD)": {
+    "Chất lượng cao (HD)": {
         "quality": "hd",
         "steps": 40,
         "guidance_scale": 7.5,
         "cfg_scale": 7.0,
         "prompt_suffix": "ultra detailed, crisp focus, cinematic texture",
     },
-    "Si\u00eau chi ti\u1ebft (Ultra+)": {
+    "Siêu chi tiết (Ultra+)": {
         "quality": "hd",
         "steps": 55,
         "guidance_scale": 8.0,
@@ -403,174 +445,46 @@ STYLE_PRESETS = {
     },
 }
 
-SCENE_PRESETS = {
-    "Mặc định (không ép bố cục)": {
-        "template": "{subject}",
-        "size": "Vuông 1024",
-        "ratio": "1:1",
-    },
-    "Phong c\u1ea3nh \u0111i\u1ec7n \u1ea3nh": {
-        "template": "{subject}, wide shot, strong visual depth",
-        "size": "Ngang 16:9",
-        "ratio": "16:9",
-    },
-    "Ch\u00e2n dung avatar": {
-        "template": "close-up portrait of {subject}, centered composition",
-        "size": "Vu\u00f4ng 1024",
-        "ratio": "1:1",
-    },
-    "Poster qu\u1ea3ng c\u00e1o": {
-        "template": "advertising poster featuring {subject}, bold typography space",
-        "size": "D\u1ecdc 9:16",
-        "ratio": "9:16",
-    },
-    "Ảnh sản phẩm": {
-        "template": "studio product photo of {subject}, premium branding style",
-        "size": "Vu\u00f4ng 1024",
-        "ratio": "1:1",
-    },
-    "Ki\u1ebfn tr\u00fac hi\u1ec7n \u0111\u1ea1i": {
-        "template": "modern architecture of {subject}, clean lines and geometry",
-        "size": "Ngang 3:2",
-        "ratio": "3:2",
-    },
-    "Fantasy": {
-        "template": "epic fantasy concept art of {subject}, grand environment",
-        "size": "Ngang 16:9",
-        "ratio": "16:9",
-    },
-    "Ý tưởng logo": {
-        "template": "minimal logo concept for {subject}, iconic symbol",
-        "size": "Vu\u00f4ng 1024",
-        "ratio": "1:1",
-    },
-}
 
-WORKFLOW_PRESETS = {
-    "1 chạm: Avatar": {
-        "scene": "Ch\u00e2n dung avatar",
-        "style": "Chân thực",
-        "quality_profile": "Ch\u1ea5t l\u01b0\u1ee3ng cao (HD)",
-        "size_preset": "Vu\u00f4ng 1024",
-        "ratio": "1:1",
-        "response_format": "binary",
-        "n": 1,
-        "extra": {"image_detail": "high"},
-    },
-    "1 chạm: Poster": {
-        "scene": "Poster qu\u1ea3ng c\u00e1o",
-        "style": "Điện ảnh",
-        "quality_profile": "Si\u00eau chi ti\u1ebft (Ultra+)",
-        "size_preset": "D\u1ecdc 9:16",
-        "ratio": "9:16",
-        "response_format": "binary",
-        "n": 1,
-        "extra": {"background": "opaque"},
-    },
-    "1 chạm: Sản phẩm": {
-        "scene": "Ảnh sản phẩm",
-        "style": "3D",
-        "quality_profile": "Ch\u1ea5t l\u01b0\u1ee3ng cao (HD)",
-        "size_preset": "Vu\u00f4ng 1536",
-        "ratio": "1:1",
-        "response_format": "binary",
-        "n": 1,
-        "extra": {"output_format": "png"},
-    },
-    "1 chạm: Anime": {
-        "scene": "Fantasy",
-        "style": "Anime",
-        "quality_profile": "Cân bằng",
-        "size_preset": "Ngang 16:9",
-        "ratio": "16:9",
-        "response_format": "binary",
-        "n": 1,
-        "extra": {},
-    },
-    "1 chạm: Logo": {
-        "scene": "Ý tưởng logo",
-        "style": "Logo tối giản",
-        "quality_profile": "Cân bằng",
-        "size_preset": "Vu\u00f4ng 1024",
-        "ratio": "1:1",
-        "response_format": "binary",
-        "n": 1,
-        "extra": {"background": "transparent", "output_format": "png"},
-    },
-}
 
-COMPOSE_LAYOUT_OPTIONS = {
-    "collage": "Cắt dán tự do",
-    "mosaic": "Ô lưới",
-    "side-by-side": "Đặt cạnh nhau",
-    "blend": "Hòa trộn mềm",
-}
 
-EDIT_PRESET_PROMPTS = {
-    "Tăng chất lượng ảnh": "Giữ bố cục chính, tăng độ nét, giảm noise, cân bằng ánh sáng và màu sắc.",
-    "Đổi phong cách điện ảnh": "Giữ đối tượng chính, chuyển sang tông điện ảnh, ánh sáng chiều sâu, tương phản cao.",
-    "Làm đẹp chân dung": "Giữ gương mặt tự nhiên, cải thiện da nhẹ, làm rõ mắt, cân sáng mềm mại.",
-    "Nâng cấp sản phẩm": "Giữ sản phẩm trung tâm, nền sạch, phản xạ đẹp, ánh sáng studio chuyên nghiệp.",
-}
 
-COMPOSE_PRESET_PROMPTS = {
-    "Poster truyền thông": "Ghép các ảnh thành poster rõ chủ thể chính, chừa khoảng trống chữ, phối màu hài hòa.",
-    "Ảnh bìa mạng xã hội": "Ghép ảnh theo bố cục cân đối, nổi bật thương hiệu, hợp tỉ lệ hiển thị online.",
-    "Moodboard ý tưởng": "Ghép ảnh thành bảng ý tưởng sáng tạo, nhấn mạnh tính nhất quán màu và cảm xúc.",
-    "Trình bày sản phẩm": "Ghép nhiều góc chụp sản phẩm thành một layout sạch và chuyên nghiệp.",
-}
 
-TRANSLATE_TONE_OPTIONS = [
-    "Giữ nguyên tuyệt đối bố cục",
-    "Ưu tiên đọc rõ",
-    "Ưu tiên thẩm mỹ",
+
+
+
+
+CPAB_IMAGE_MODELS = [
+    "gpt-image-2",
 ]
 
-STORY_BEAT_OPTIONS = [
-    "Mở đầu -> Cao trào -> Kết",
-    "Hành trình nhân vật",
-    "Quảng bá sản phẩm",
-    "Minh họa kiến thức",
+CPAB_CHAT_MODELS = [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
 ]
 
-QUALITY_TIER_PRESETS = {
-    "Fast": {
-        "quality_profile": "Nhanh",
-        "note": "Nhanh và tiết kiệm",
-        "count": 1,
-    },
-    "Pro": {
-        "quality_profile": "Chất lượng cao (HD)",
-        "note": "Đẹp, cân bằng tốc độ",
-        "count": 2,
-    },
-    "Cực kỳ": {
-        "quality_profile": "Siêu chi tiết (Ultra+)",
-        "note": "Chi tiết tối đa",
-        "count": 4,
-    },
+CPAB_ALLOWED_MODELS = CPAB_CHAT_MODELS + CPAB_IMAGE_MODELS
+
+MODEL_RECOMMENDED = CPAB_CHAT_MODELS.copy()
+
+MODEL_TOP_PRIORITY = CPAB_CHAT_MODELS.copy()
+
+OPENAI_GPT_IMAGE_MODELS = {
+    "gpt-image-1.5",
+    "gpt-image-1",
+    "gpt-image-1-mini",
+    "gpt-image-2",
+    "chatgpt-image-latest",
 }
-
-CREATE_PROMPT_MODIFIERS = {
-    "Khía cạnh vuông": "ưu tiên bố cục vuông, cân đối trung tâm",
-    "Không phong cách": "không áp phong cách nghệ thuật nặng",
-    "Không màu": "ưu tiên bảng màu tối giản, ít tông màu",
-    "Không ánh sáng": "ánh sáng phẳng, tự nhiên, không hiệu ứng phức tạp",
-    "Không cấu trúc": "hạn chế chi tiết nền rối và cấu trúc phức tạp",
+OPENAI_GPT_IMAGE_TRANSPARENT_MODELS = {
+    "gpt-image-1.5",
+    "gpt-image-1",
+    "gpt-image-1-mini",
 }
-
-MODEL_RECOMMENDED = [
-    "cx/gpt-5.4-image",
-    "cx/gpt-5.3-image",
-    "cx/gpt-5.2-image",
-]
-
-MODEL_TOP_PRIORITY = [
-    "cx/gpt-5.4-image",
-    "cx/gpt-5.3-image",
-    "cx/gpt-5.2-image",
-    "cx/gpt-5.5-image",
-]
+OPENAI_GPT_IMAGE_NO_TRANSPARENT_MODELS = {"gpt-image-2"}
+DEFAULT_TRANSPARENT_NATIVE_MODEL = "gpt-image-1.5"
 
 MODEL_COMPAT_FALLBACKS = {
     # Map of unsupported-version → newer-supported-version (Codex client too old).
@@ -580,10 +494,11 @@ MODEL_COMPAT_FALLBACKS = {
 # Do not auto-fallback to `openai/*` here. A local 9Router server may expose only
 # `cx/*-image` models and return "No credentials for provider: openai" for OpenAI
 # routes. Keep model selection tied to `/v1/models/image`.
-MODEL_ENTITLEMENT_FALLBACKS: tuple[str, ...] = ()
-
-DEFAULT_WORKFLOW_PRESET = "1 chạm: Avatar"
-DEFAULT_SCENE_PRESET = "Mặc định (không ép bố cục)"
+MODEL_ENTITLEMENT_FALLBACKS: tuple[str, ...] = (
+    "gpt-5.4-image",
+    "gpt-5.3-image",
+    "gpt-5.2-image",
+)
 
 DEFAULT_LORA_TRAIN_ENDPOINT = "/v1/lora/train"
 DEFAULT_LORA_STATUS_ENDPOINT = "/v1/lora/train/status"
@@ -673,19 +588,7 @@ LORA_WORKFLOW_PROFILES = {
     },
 }
 
-REFERENCE_DRAW_MODES = {
-    "Giữ bố cục, nâng chất lượng": "giữ bố cục ảnh mẫu, tăng độ nét, cải thiện ánh sáng",
-    "Giữ chủ thể, đổi phong cách": "giữ chủ thể chính, thay đổi phong cách theo prompt",
-    "Biến thể sáng tạo": "tạo biến thể mới dựa trên ảnh mẫu, vẫn giữ tinh thần hình gốc",
-}
 
-WORKFLOW_TABS = [
-    "Tạo ảnh",
-    "Sửa ảnh",
-    "Ghép ảnh",
-    "Dịch ảnh",
-    "Làm truyện",
-]
 
 TRANSLATE_LANG_OPTIONS = [
     "Tiếng Việt",
@@ -749,14 +652,18 @@ def save_env_file(env_file: Path, base_url: str, api_key: str, api_keys_pool_tex
 def normalize_base_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if not normalized:
-        raise ValueError("NINEROUTER_URL \u0111ang tr\u1ed1ng.")
+        raise ValueError("NINEROUTER_URL đang trống.")
     if not normalized.startswith("http://") and not normalized.startswith("https://"):
-        raise ValueError("NINEROUTER_URL ph\u1ea3i b\u1eaft \u0111\u1ea7u b\u1eb1ng http:// ho\u1eb7c https://")
+        raise ValueError("NINEROUTER_URL phải bắt đầu bằng http:// hoặc https://")
     return normalized
 
 
 def build_url(base_url: str, path: str, query: dict[str, Any] | None = None) -> str:
-    url = f"{base_url}{path}"
+    normalized_base = str(base_url or "").strip().rstrip("/")
+    normalized_path = path if str(path).startswith("/") else f"/{path}"
+    if normalized_base.endswith("/v1") and normalized_path.startswith("/v1/"):
+        normalized_path = normalized_path[len("/v1"):]
+    url = f"{normalized_base}{normalized_path}"
     if not query:
         return url
     return f"{url}?{parse.urlencode(query)}"
@@ -781,7 +688,7 @@ def append_query_params(url: str, query: dict[str, Any]) -> str:
 
 
 def build_headers(api_key: str | None = None) -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "curl/8.13.0"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
@@ -812,7 +719,12 @@ def resolve_api_get_timeout_seconds(value: Any | None = None) -> int:
 def resolve_api_post_timeout_seconds(value: Any | None = None) -> int:
     fallback = st.session_state.get("api_request_timeout", DEFAULT_API_POST_TIMEOUT_SECONDS)
     source = fallback if value is None else value
-    return _clamp_int(source, 30, MAX_API_TIMEOUT_SECONDS)
+    return _clamp_int(source, MIN_API_POST_TIMEOUT_SECONDS, MAX_API_TIMEOUT_SECONDS)
+
+def ensure_runtime_timeout_defaults() -> None:
+    current_timeout = st.session_state.get("api_request_timeout", DEFAULT_API_POST_TIMEOUT_SECONDS)
+    if _clamp_int(current_timeout, 0, MAX_API_TIMEOUT_SECONDS) < MIN_API_POST_TIMEOUT_SECONDS:
+        st.session_state.api_request_timeout = DEFAULT_API_POST_TIMEOUT_SECONDS
 
 
 def resolve_image_retry_count(value: Any | None = None) -> int:
@@ -863,6 +775,26 @@ def is_codex_entitlement_error(error_text: str) -> bool:
     return any(signal in lowered for signal in signals)
 
 
+def is_upstream_headers_timeout_error(error_text: str) -> bool:
+    lowered = str(error_text or "").lower()
+    signals = [
+        "und_err_headers_timeout",
+        "headers timeout error",
+        "headers timeout",
+    ]
+    return any(signal in lowered for signal in signals)
+
+
+def is_transparent_background_not_supported_error(error_text: str) -> bool:
+    lowered = str(error_text or "").lower()
+    signals = [
+        "transparent background is not supported",
+        "background=transparent is not supported",
+        "background transparent is not supported",
+    ]
+    return any(signal in lowered for signal in signals)
+
+
 def suggest_compat_model_fallback(model_id: str) -> str:
     clean = str(model_id or "").strip()
     if not clean:
@@ -880,6 +812,105 @@ def suggest_compat_model_fallback(model_id: str) -> str:
     return clean
 
 
+def model_provider_prefix(model_id: str) -> str:
+    clean = str(model_id or "").strip()
+    if "/" not in clean:
+        return ""
+    return clean.rsplit("/", 1)[0] + "/"
+
+
+def model_suffix(model_id: str) -> str:
+    return str(model_id or "").strip().rsplit("/", 1)[-1].lower()
+
+
+def is_cpab_base_url(base_url: str) -> bool:
+    return "cpab.hiennq.dev" in str(base_url or "").lower()
+
+
+def is_cpab_image_model(model_id: str) -> bool:
+    clean = str(model_id or "").strip().lower()
+    return clean in {item.lower() for item in CPAB_IMAGE_MODELS}
+
+
+def is_cpab_chat_model(model_id: str) -> bool:
+    clean = str(model_id or "").strip().lower()
+    return clean in {item.lower() for item in CPAB_CHAT_MODELS}
+
+
+def is_image_endpoint_model_unsupported_error(error_text: str) -> bool:
+    lowered = str(error_text or "").lower()
+    return (
+        "not supported on /v1/images/generations" in lowered
+        or "not supported on /v1/images/edits" in lowered
+    )
+
+
+def is_openai_gpt_image_model(model_id: str) -> bool:
+    return model_suffix(model_id) in OPENAI_GPT_IMAGE_MODELS
+
+
+def is_openai_transparent_supported_model(model_id: str) -> bool:
+    return model_suffix(model_id) in OPENAI_GPT_IMAGE_TRANSPARENT_MODELS
+
+
+def is_openai_transparent_known_unsupported_model(model_id: str) -> bool:
+    return model_suffix(model_id) in OPENAI_GPT_IMAGE_NO_TRANSPARENT_MODELS
+
+
+def choose_transparent_native_model(current_model: Any = "") -> str:
+    current = str(current_model or "").strip()
+    if is_openai_transparent_supported_model(current):
+        return current
+    try:
+        candidates = unique_list(
+            [str(item).strip() for item in st.session_state.get("models", []) if str(item).strip()]
+            + MODEL_TOP_PRIORITY
+            + MODEL_RECOMMENDED
+            + [DEFAULT_TRANSPARENT_NATIVE_MODEL]
+        )
+    except Exception:
+        candidates = unique_list(MODEL_TOP_PRIORITY + MODEL_RECOMMENDED + [DEFAULT_TRANSPARENT_NATIVE_MODEL])
+    for candidate in candidates:
+        if is_openai_transparent_supported_model(candidate):
+            return model_suffix(candidate)
+    return DEFAULT_TRANSPARENT_NATIVE_MODEL
+
+
+def get_loaded_image_models_for_fallback() -> list[str]:
+    try:
+        loaded = [str(item).strip() for item in st.session_state.get("models", []) if str(item).strip()]
+    except Exception:
+        loaded = []
+    return unique_list(loaded + MODEL_TOP_PRIORITY + MODEL_RECOMMENDED)
+
+
+def suggest_entitlement_model_fallback(model_id: str, attempted_models: list[str]) -> str:
+    current = str(model_id or "").strip()
+    if not current:
+        return ""
+
+    attempted_suffixes = {model_suffix(item) for item in attempted_models if str(item).strip()}
+    current_suffix = model_suffix(current)
+    available = get_loaded_image_models_for_fallback()
+    available_by_suffix: dict[str, str] = {model_suffix(item): item for item in available if item}
+
+    fallback_suffixes: list[str] = []
+    if current_suffix == "gpt-5.5-image":
+        fallback_suffixes.extend(MODEL_ENTITLEMENT_FALLBACKS)
+    elif current_suffix == "gpt-5.4-image":
+        fallback_suffixes.extend(["gpt-5.3-image", "gpt-5.2-image"])
+    elif current_suffix == "gpt-5.3-image":
+        fallback_suffixes.append("gpt-5.2-image")
+    fallback_suffixes = [item for item in unique_list(fallback_suffixes) if item and item not in attempted_suffixes]
+
+    prefix = model_provider_prefix(current) or "cx/"
+    for fallback_suffix in fallback_suffixes:
+        candidate = available_by_suffix.get(fallback_suffix, f"{prefix}{fallback_suffix}")
+        if candidate and candidate != current and candidate not in attempted_models:
+            return candidate
+    return ""
+
+
 def is_retryable_generate_error(ex: Exception) -> bool:
     message = str(ex or "")
     lowered = message.lower()
@@ -887,6 +918,10 @@ def is_retryable_generate_error(ex: Exception) -> bool:
     if is_codex_upgrade_required_error(message):
         return False
     if is_codex_entitlement_error(message):
+        return False
+    if is_upstream_headers_timeout_error(message):
+        return False
+    if is_transparent_background_not_supported_error(message):
         return False
 
     status_code = parse_http_status_code(message)
@@ -916,26 +951,40 @@ def build_generate_error_hint(error_text: str) -> str:
     lowered = text.lower()
     if "no credentials for provider: openai" in lowered:
         return (
-            "G?i ?: server 9Router hi?n ch?a c?u h?nh provider OpenAI. "
-            "H?y d?ng model c? s?n trong `/v1/models/image` (v? d? `cx/gpt-5.4-image`) "
-            "ho?c c?u h?nh OpenAI credentials ? ph?a server."
+            "Gợi ý: server 9Router hiện chưa cấu hình provider OpenAI. "
+            "Hãy dùng model có sẵn trong `/v1/models/image` (ví dụ `cx/gpt-5.4-image`) "
+            "hoặc cấu hình OpenAI credentials ở phía server."
         )
     if is_codex_entitlement_error(text):
         return (
-            "G?i ?: model `cx/gpt-5.x-image` y?u c?u entitlement ph? h?p ? ph?a server. "
-            "H?y ki?m tra t?i kho?n/quy?n provider `cx` tr?n 9Router ho?c ch?n model "
-            "kh?c c? s?n trong `/v1/models/image`."
+            "Gợi ý: đây là lỗi quyền tài khoản/provider, không phải lỗi prompt hay timeout. "
+            "Model `cx/gpt-5.x-image` cần entitlement phù hợp ở phía server 9Router/Codex "
+            "(thường là tài khoản Plus/Pro hoặc phiên đăng nhập provider còn hạn). "
+            "Hãy kiểm tra quyền provider `cx`, đăng nhập lại/cập nhật token phía server, hoặc chọn model khác trong `/v1/models/image`."
+        )
+    if is_upstream_headers_timeout_error(text):
+        return (
+            "Gợi ý: đây là timeout nội bộ phía 9Router/upstream (UND_ERR_HEADERS_TIMEOUT, reset sau ~30s), "
+            "không phải timeout của app Streamlit. Tăng timeout app lên 570s không sửa được nếu server 9Router tự ngắt ở 30s. "
+            "Cần tăng headers/request timeout ở server 9Router hoặc giảm độ nặng request: số ảnh=1, quality=low/medium, prompt ngắn hơn, ít ảnh mẫu hơn."
+        )
+    if is_transparent_background_not_supported_error(text):
+        return (
+            "Gợi ý: model hiện tại không hỗ trợ `background=transparent` native. "
+            "Muốn không nền chuẩn GPT phải dùng OpenAI Images API với `gpt-image-1.5`, `gpt-image-1` hoặc `gpt-image-1-mini` "
+            "và `background=transparent`, `output_format=png`. `gpt-image-2` hiện không hỗ trợ transparent background. "
+            "Nếu vẫn thấy URL `localhost:20128` thì app đang đi qua 9Router; hãy cấu hình provider OpenAI trong 9Router hoặc đổi Base URL sang `https://api.openai.com`."
         )
     if is_codex_upgrade_required_error(text):
-        return "G?i ?: model hi?n t?i c?n Codex m?i h?n. H?y n?ng c?p Codex ho?c ??i sang `cx/gpt-5.4-image`."
+        return "Gợi ý: model hiện tại cần Codex mới hơn. Hãy nâng cấp Codex hoặc đổi sang `cx/gpt-5.4-image`."
     if "invalid size" in lowered and "minimum pixel budget" in lowered:
-        return "G?i ?: d?ng size >= 1024x1024 ho?c b? tr??ng size ?? backend t? ch?n k?ch th??c h?p l?."
+        return "Gợi ý: dùng size >= 1024x1024 hoặc bỏ trường size để backend tự chọn kích thước hợp lý."
     if "[401]" in lowered or "unauthorized" in lowered:
-        return "G?i ?: ki?m tra l?i API key / quy?n truy c?p model."
+        return "Gợi ý: kiểm tra lại API key / quyền truy cập model."
     if "[429]" in lowered or "rate limit" in lowered:
-        return "G?i ?: gi?m lu?ng song song, t?ng backoff retry ho?c ch? quota reset."
+        return "Gợi ý: giảm luồng song song, tăng backoff retry hoặc chờ quota reset."
     if "timed out" in lowered or "timeout" in lowered:
-        return "G?i ?: t?ng Timeout request l?n 360-480s v? retry 1-2 l?n."
+        return "Gợi ý: tăng Timeout request lên 360-480s và retry 1-2 lần. Có thể giảm số ảnh/lượt nếu server chậm."
     return ""
 
 
@@ -949,7 +998,7 @@ def http_get_json(url: str, api_key: str | None = None, timeout_seconds: int | N
             body = resp.read().decode("utf-8")
     except error.HTTPError as ex:
         text = ex.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"GET {url} th\u1ea5t b\u1ea1i [{ex.code}]\n{text}") from ex
+        raise RuntimeError(f"GET {url} thất bại [{ex.code}]\n{text}") from ex
     except TimeoutError as ex:
         raise RuntimeError(f"GET {url} bị timeout sau {resolved_timeout}s") from ex
     except socket.timeout as ex:
@@ -957,7 +1006,7 @@ def http_get_json(url: str, api_key: str | None = None, timeout_seconds: int | N
     except error.URLError as ex:
         if isinstance(ex.reason, TimeoutError) or isinstance(ex.reason, socket.timeout):
             raise RuntimeError(f"GET {url} bị timeout sau {resolved_timeout}s") from ex
-        raise RuntimeError(f"Kh\u00f4ng k\u1ebft n\u1ed1i \u0111\u01b0\u1ee3c t\u1edbi {url}: {ex.reason}") from ex
+        raise RuntimeError(f"Không kết nối được tới {url}: {ex.reason}") from ex
     return json.loads(body)
 
 
@@ -1015,9 +1064,17 @@ def http_post_json(
 @st.cache_data(show_spinner=False, ttl=60)
 def discover_models(base_url: str, api_key: str, nonce: int) -> list[str]:
     _ = nonce
-    data = http_get_json(build_url(base_url, "/v1/models/image"), api_key or None)
+    try:
+        data = http_get_json(build_url(base_url, "/v1/models/image"), api_key or None)
+    except Exception:
+        data = http_get_json(build_url(base_url, "/v1/models"), api_key or None)
     models = data.get("data", [])
-    return [item.get("id", "") for item in models if item.get("id")]
+    discovered = [item.get("id", "") for item in models if item.get("id")]
+    allowed = {item.lower() for item in CPAB_ALLOWED_MODELS}
+    filtered = [item for item in discovered if item.lower() in allowed]
+    allowed_chat = {item.lower() for item in CPAB_CHAT_MODELS}
+    filtered_chat = [item for item in filtered if item.lower() in allowed_chat]
+    return unique_list(filtered_chat or CPAB_CHAT_MODELS.copy())
 
 
 def get_model_info(base_url: str, api_key: str, model_id: str) -> dict[str, Any]:
@@ -1063,6 +1120,110 @@ def sanitize_payload_for_retry(payload: dict[str, Any]) -> tuple[dict[str, Any],
     return cleaned, removed
 
 
+def _payload_image_refs(payload: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    single = payload.get("image")
+    if isinstance(single, str) and single.strip():
+        refs.append(single.strip())
+    many = payload.get("images")
+    if isinstance(many, list):
+        refs.extend(str(item).strip() for item in many if str(item).strip())
+    return unique_list(refs)
+
+
+def build_cpab_chat_image_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    prompt = str(payload.get("prompt", "") or "").strip()
+    negative = str(payload.get("negative_prompt", "") or "").strip()
+    if negative:
+        prompt = append_prompt_rule(prompt, f"Avoid: {negative}")
+
+    details: list[str] = []
+    for key in ("size", "aspect_ratio", "quality", "style", "background", "output_format", "image_detail"):
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            details.append(f"{key}: {value}")
+    if details:
+        prompt = append_prompt_rule(prompt, "Generation settings: " + ", ".join(details))
+    if not prompt:
+        prompt = "Generate an image."
+
+    refs = _payload_image_refs(payload)
+    if refs:
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content.extend({"type": "image_url", "image_url": {"url": ref}} for ref in refs[:12])
+    else:
+        content = prompt
+
+    chat_payload: dict[str, Any] = {
+        "model": str(payload.get("model", DEFAULT_MODEL)).strip() or DEFAULT_MODEL,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": float(payload.get("temperature", 0.7) or 0.7),
+        "max_tokens": int(payload.get("max_tokens", 500) or 500),
+    }
+    return chat_payload
+
+
+def decode_data_image_url(url: str) -> tuple[bytes, str] | None:
+    clean = str(url or "").strip()
+    if not clean.lower().startswith("data:image/") or "," not in clean:
+        return None
+    header, encoded = clean.split(",", 1)
+    content_type = header[5:].split(";", 1)[0] or "image/png"
+    try:
+        return base64.b64decode(encoded), content_type
+    except (binascii.Error, ValueError):
+        return None
+
+
+def parse_cpab_chat_image_result(parsed: dict[str, Any], response_format: str) -> dict[str, Any]:
+    choices = parsed.get("choices", [])
+    if not choices:
+        return {"kind": "json", "raw": parsed}
+    message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    images = message.get("images", []) if isinstance(message, dict) else []
+    for image_item in images:
+        if not isinstance(image_item, dict):
+            continue
+        image_url = image_item.get("image_url", {})
+        url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+        decoded = decode_data_image_url(str(url))
+        if decoded:
+            image_bytes, content_type = decoded
+            kind = "binary" if response_format == "binary" else "b64_json"
+            return {"kind": kind, "image_bytes": image_bytes, "content_type": content_type, "raw": parsed}
+        if url:
+            return {"kind": "url", "url": str(url), "raw": parsed}
+        b64_json = image_item.get("b64_json")
+        if isinstance(b64_json, str) and b64_json.strip():
+            return {
+                "kind": "binary" if response_format == "binary" else "b64_json",
+                "image_bytes": base64.b64decode(b64_json),
+                "content_type": "image/png",
+                "raw": parsed,
+            }
+    return {"kind": "json", "raw": parsed}
+
+
+def generate_cpab_chat_image(
+    base_url: str,
+    api_key: str,
+    payload: dict[str, Any],
+    response_format: str,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    chat_payload = build_cpab_chat_image_payload(payload)
+    parsed = http_post_json(
+        build_url(base_url, "/v1/chat/completions"),
+        chat_payload,
+        api_key or None,
+        timeout_seconds=timeout_seconds,
+    )
+    result = parse_cpab_chat_image_result(parsed, response_format)
+    if result.get("kind") == "json":
+        raise RuntimeError("CPAB chat completion không trả ảnh trong `message.images`.")
+    return result
+
+
 def generate_image(
     base_url: str,
     api_key: str,
@@ -1070,28 +1231,49 @@ def generate_image(
     response_format: str,
     timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
+    effective_payload = dict(payload)
+    if is_cpab_base_url(base_url) and is_cpab_chat_model(str(effective_payload.get("model", ""))):
+        return generate_cpab_chat_image(
+            base_url=base_url,
+            api_key=api_key,
+            payload=effective_payload,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
+        )
+
+    openai_gpt_image_json = is_openai_gpt_image_model(str(effective_payload.get("model", "")))
+    request_payload = prepare_openai_gpt_image_payload(effective_payload) if openai_gpt_image_json else dict(effective_payload)
+    request_payload.pop(GREEN_SCREEN_PAYLOAD_FLAG, None)
+    request_payload.pop(BLUE_SCREEN_PAYLOAD_FLAG, None)
+
     endpoint = build_url(base_url, "/v1/images/generations")
-    if response_format == "binary":
+    if response_format == "binary" and not openai_gpt_image_json:
         endpoint = build_url(base_url, "/v1/images/generations", {"response_format": "binary"})
     try:
-        body, content_type = http_post(endpoint, payload, api_key or None, timeout_seconds=timeout_seconds)
+        body, content_type = http_post(endpoint, request_payload, api_key or None, timeout_seconds=timeout_seconds)
     except RuntimeError as ex:
         # If server rejects with 400 "Invalid JSON body" or "bad_request",
         # retry once with a sanitized payload (drop optional/non-standard fields).
         msg = str(ex)
+        if payload_requests_transparent_background(request_payload) and is_transparent_background_not_supported_error(msg):
+            raise
+        if openai_gpt_image_json:
+            raise
         is_bad_request = "[400]" in msg and (
             "invalid_request_error" in msg.lower()
             or "bad_request" in msg.lower()
             or "invalid json" in msg.lower()
+            or "not supported" in msg.lower()
+            or "unsupported" in msg.lower()
         )
         if not is_bad_request:
             raise
-        cleaned, removed = sanitize_payload_for_retry(payload)
-        if not removed or cleaned == payload:
+        cleaned, removed = sanitize_payload_for_retry(request_payload)
+        if not removed or cleaned == request_payload:
             raise
         body, content_type = http_post(endpoint, cleaned, api_key or None, timeout_seconds=timeout_seconds)
 
-    if response_format == "binary":
+    if response_format == "binary" and not openai_gpt_image_json:
         return {"kind": "binary", "image_bytes": body, "content_type": content_type, "raw": None}
 
     parsed = json.loads(body.decode("utf-8"))
@@ -1102,7 +1284,8 @@ def generate_image(
     if first.get("url"):
         return {"kind": "url", "url": first["url"], "raw": parsed}
     if first.get("b64_json"):
-        return {"kind": "b64_json", "image_bytes": base64.b64decode(first["b64_json"]), "raw": parsed}
+        kind = "binary" if response_format == "binary" else "b64_json"
+        return {"kind": kind, "image_bytes": base64.b64decode(first["b64_json"]), "content_type": "image/png", "raw": parsed}
     return {"kind": "json", "raw": parsed}
 
 
@@ -1123,22 +1306,28 @@ def generate_image_with_retry(
     last_error: Exception | None = None
     current_payload = dict(payload)
     attempted_compat_fallback = False
+    attempted_image_model_fallback = False
+    attempted_models = [str(current_payload.get("model", "")).strip()]
 
     attempt = 1
     while attempt <= total_attempts:
-        timeout_now = min(MAX_API_TIMEOUT_SECONDS, timeout_base + (attempt - 1) * 30)
+        # Escalate timeout each retry: server may be slow on cold cache.
+        timeout_now = min(MAX_API_TIMEOUT_SECONDS, timeout_base + (attempt - 1) * 90)
         try:
-            return generate_image(
+            result = generate_image(
                 base_url=base_url,
                 api_key=api_key,
                 payload=current_payload,
                 response_format=response_format,
                 timeout_seconds=timeout_now,
             )
+            return normalize_transparent_image_result(result, current_payload)
         except Exception as ex:
             last_error = ex
 
             current_model = str(current_payload.get("model", "")).strip()
+            if current_model and current_model not in attempted_models:
+                attempted_models.append(current_model)
             fallback_model = suggest_compat_model_fallback(current_model)
             if (
                 not attempted_compat_fallback
@@ -1149,6 +1338,74 @@ def generate_image_with_retry(
                 attempted_compat_fallback = True
                 current_payload = dict(current_payload)
                 current_payload["model"] = fallback_model
+                attempted_models.append(fallback_model)
+                if attempt == total_attempts:
+                    total_attempts += 1
+                attempt += 1
+                continue
+
+            if (
+                not attempted_image_model_fallback
+                and is_cpab_base_url(base_url)
+                and is_image_endpoint_model_unsupported_error(str(ex))
+                and not is_cpab_image_model(current_model)
+            ):
+                attempted_image_model_fallback = True
+                tag = f"[{task_label}] " if task_label else ""
+                st.warning(
+                    f"{tag}Model `{current_model}` là model chat, không dùng được cho endpoint tạo ảnh; tự dùng backend ảnh `{DEFAULT_IMAGE_MODEL}`."
+                )
+                current_payload = dict(current_payload)
+                current_payload["model"] = DEFAULT_IMAGE_MODEL
+                attempted_models.append(DEFAULT_IMAGE_MODEL)
+                if attempt == total_attempts:
+                    total_attempts += 1
+                attempt += 1
+                continue
+
+            entitlement_fallback_model = ""
+            if is_codex_entitlement_error(str(ex)):
+                entitlement_fallback_model = suggest_entitlement_model_fallback(current_model, attempted_models)
+            if entitlement_fallback_model:
+                tag = f"[{task_label}] " if task_label else ""
+                st.warning(
+                    f"{tag}Model `{current_model}` thiếu quyền/không trả ảnh; tự thử `{entitlement_fallback_model}`."
+                )
+                current_payload = dict(current_payload)
+                current_payload["model"] = entitlement_fallback_model
+                attempted_models.append(entitlement_fallback_model)
+                if attempt == total_attempts:
+                    total_attempts += 1
+                attempt += 1
+                continue
+
+            timeout_fallback_model = ""
+            if is_upstream_headers_timeout_error(str(ex)):
+                timeout_fallback_model = suggest_entitlement_model_fallback(current_model, attempted_models)
+            if timeout_fallback_model:
+                tag = f"[{task_label}] " if task_label else ""
+                st.warning(
+                    f"{tag}Model `{current_model}` bị upstream headers timeout 30s; tự thử `{timeout_fallback_model}` nhẹ hơn."
+                )
+                current_payload = dict(current_payload)
+                current_payload["model"] = timeout_fallback_model
+                attempted_models.append(timeout_fallback_model)
+                if attempt == total_attempts:
+                    total_attempts += 1
+                attempt += 1
+                continue
+
+            transparent_fallback_model = ""
+            if is_transparent_background_not_supported_error(str(ex)):
+                transparent_fallback_model = suggest_entitlement_model_fallback(current_model, attempted_models)
+            if transparent_fallback_model:
+                tag = f"[{task_label}] " if task_label else ""
+                st.warning(
+                    f"{tag}Model `{current_model}` không hỗ trợ nền trong suốt native; tự thử `{transparent_fallback_model}`."
+                )
+                current_payload = dict(current_payload)
+                current_payload["model"] = transparent_fallback_model
+                attempted_models.append(transparent_fallback_model)
                 if attempt == total_attempts:
                     total_attempts += 1
                 attempt += 1
@@ -1162,14 +1419,22 @@ def generate_image_with_retry(
             delay = min(12.0, backoff_base * (2 ** max(0, attempt - 1)) + jitter)
             tag = f"[{task_label}] " if task_label else ""
             st.warning(
-                f"{tag}L?n {attempt}/{total_attempts} l?i: {ex}. "
-                f"S? th? l?i sau {delay:.1f}s (timeout={timeout_now}s)."
+                f"{tag}Lần {attempt}/{total_attempts} lỗi: {ex}. "
+                f"Sẽ thử lại sau {delay:.1f}s (timeout={timeout_now}s)."
             )
             time.sleep(delay)
             attempt += 1
 
     assert last_error is not None
     hint = build_generate_error_hint(str(last_error))
+    if (
+        is_codex_entitlement_error(str(last_error))
+        or is_upstream_headers_timeout_error(str(last_error))
+        or is_transparent_background_not_supported_error(str(last_error))
+    ) and attempted_models:
+        tried = " → ".join(item for item in unique_list(attempted_models) if item)
+        if tried:
+            hint = f"{hint}\nĐã thử model: {tried}" if hint else f"Đã thử model: {tried}"
     if hint:
         raise RuntimeError(f"{last_error}\\n{hint}")
     raise RuntimeError(str(last_error))
@@ -1203,6 +1468,1027 @@ def infer_ext(content_type: str, fallback: str = ".png") -> str:
     if "gif" in ctype:
         return ".gif"
     return fallback
+
+
+def append_prompt_rule(prompt: str, rule: str) -> str:
+    prompt_text = str(prompt or "").strip()
+    rule_text = str(rule or "").strip()
+    if not rule_text:
+        return prompt_text
+    if rule_text.lower() in prompt_text.lower():
+        return prompt_text
+    if not prompt_text:
+        return rule_text
+    return f"{prompt_text}\n\n{rule_text}"
+
+
+def append_unique_csv_rule(text: str, additions: str) -> str:
+    parts = [part.strip() for part in str(text or "").split(",") if part.strip()]
+    seen = {part.lower() for part in parts}
+    for item in str(additions or "").split(","):
+        clean_item = item.strip()
+        if clean_item and clean_item.lower() not in seen:
+            parts.append(clean_item)
+            seen.add(clean_item.lower())
+    return ", ".join(parts)
+
+
+def normalize_gpt_image_quality_for_transparent(value: Any) -> str:
+    clean = str(value or "").strip().lower()
+    if not clean:
+        return TRANSPARENT_DEFAULT_QUALITY
+    mapped = GPT_IMAGE_QUALITY_ALIASES.get(clean, clean)
+    if mapped == "auto":
+        return TRANSPARENT_DEFAULT_QUALITY
+    if mapped in GPT_IMAGE_QUALITY_VALUES:
+        return mapped
+    return TRANSPARENT_DEFAULT_QUALITY
+
+
+def openai_size_from_aspect_ratio(aspect_ratio: str) -> str:
+    ratio = str(aspect_ratio or "").strip()
+    if ratio in {"", "Mặc định", ASPECT_RATIO_ORIGINAL}:
+        return ""
+    if ratio == "1:1":
+        return "1024x1024"
+    if ratio in {"16:9", "3:2", "5:4", "21:9"}:
+        return "1536x1024"
+    if ratio in {"9:16", "2:3", "4:5"}:
+        return "1024x1536"
+    return ""
+
+
+def prepare_openai_gpt_image_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    prepared = dict(payload)
+    prepared["model"] = model_suffix(prepared.get("model", "")) or str(prepared.get("model", "")).strip()
+
+    if prepared.get("background") == "transparent" and not is_openai_transparent_supported_model(str(prepared.get("model", ""))):
+        raise RuntimeError(
+            f"Model `{prepared.get('model')}` không hỗ trợ `background=transparent` native theo OpenAI Images API."
+        )
+
+    if prepared.get("background") == "transparent" and ("image" in prepared or "images" in prepared):
+        raise RuntimeError(
+            "Luồng OpenAI Images API native transparent hiện chỉ hỗ trợ text-to-image trong app này. "
+            "Hãy bỏ ảnh tham chiếu, hoặc dùng luồng sửa ảnh riêng/multipart edit khi cần image-to-image."
+        )
+
+    if "aspect_ratio" in prepared and "size" not in prepared:
+        mapped_size = openai_size_from_aspect_ratio(str(prepared.get("aspect_ratio", "")))
+        if mapped_size:
+            prepared["size"] = mapped_size
+
+    if "quality" in prepared:
+        prepared["quality"] = normalize_gpt_image_quality_for_transparent(prepared.get("quality"))
+    if prepared.get("background") == "transparent":
+        prepared["output_format"] = str(prepared.get("output_format") or "png").strip() or "png"
+        if prepared["output_format"] == "jpeg":
+            prepared["output_format"] = "png"
+
+    negative = str(prepared.pop("negative_prompt", "") or "").strip()
+    if negative:
+        prepared["prompt"] = append_prompt_rule(str(prepared.get("prompt", "")), f"Avoid: {negative}")
+
+    unsupported_fields = {
+        "aspect_ratio",
+        "image",
+        "images",
+        "style",
+        "steps",
+        "guidance_scale",
+        "cfg_scale",
+        "clip_skip",
+        "strength",
+        "sampler",
+        "image_detail",
+        "seed",
+    }
+    for field in unsupported_fields:
+        prepared.pop(field, None)
+    return prepared
+
+
+def apply_transparent_background_request(payload: dict[str, Any], enabled: bool = True) -> dict[str, Any]:
+    if not enabled:
+        return payload
+    payload[BLUE_SCREEN_PAYLOAD_FLAG] = True
+    payload.pop("background", None)
+    payload["output_format"] = "png"
+    payload["prompt"] = append_prompt_rule(str(payload.get("prompt", "")), BLUE_SCREEN_PROMPT_RULE)
+    payload["negative_prompt"] = append_unique_csv_rule(
+        str(payload.get("negative_prompt", "")),
+        BLUE_SCREEN_NEGATIVE_RULE,
+    )
+    return payload
+
+
+def payload_requests_green_screen_removal(payload: dict[str, Any]) -> bool:
+    prompt_value = str(payload.get("prompt", "")).strip().lower()
+    return bool(payload.get(GREEN_SCREEN_PAYLOAD_FLAG)) or "#00ff00" in prompt_value or "chroma key green" in prompt_value
+
+
+def payload_requests_blue_screen_removal(payload: dict[str, Any]) -> bool:
+    prompt_value = str(payload.get("prompt", "")).strip().lower()
+    return bool(payload.get(BLUE_SCREEN_PAYLOAD_FLAG)) or "#0000ff" in prompt_value or "chroma key blue" in prompt_value
+
+
+def payload_requests_chroma_screen_removal(payload: dict[str, Any]) -> bool:
+    return payload_requests_blue_screen_removal(payload) or payload_requests_green_screen_removal(payload)
+
+
+def payload_requests_transparent_background(payload: dict[str, Any]) -> bool:
+    if payload_requests_chroma_screen_removal(payload):
+        return True
+    background_value = str(payload.get("background", "")).strip().lower()
+    output_format_value = str(payload.get("output_format", "")).strip().lower()
+    prompt_value = str(payload.get("prompt", "")).strip().lower()
+    if background_value == "transparent":
+        return True
+    if output_format_value == "png" and any(
+        marker in prompt_value
+        for marker in (
+            "transparent background",
+            "png alpha",
+            "alpha channel",
+            "rgba(0,0,0,0)",
+            "alpha=0",
+        )
+    ):
+        return True
+    return False
+
+
+def rgba_has_transparent_pixels(image: Any) -> bool:
+    try:
+        alpha = image.getchannel("A")
+        alpha_min, _alpha_max = alpha.getextrema()
+        return int(alpha_min) < 255
+    except Exception:
+        return False
+
+
+def inspect_image_transparency(image_bytes: bytes) -> dict[str, Any]:
+    check: dict[str, Any] = {
+        "readable": False,
+        "ok": False,
+        "mode": "",
+        "format": "",
+        "size": "",
+        "has_alpha": False,
+        "alpha_min": None,
+        "alpha_max": None,
+        "transparent_ratio": 0.0,
+        "near_transparent_ratio": 0.0,
+        "edge_transparent_ratio": 0.0,
+        "reason": "",
+    }
+    if Image is None:
+        check["reason"] = "Pillow chưa khả dụng nên không kiểm tra alpha được."
+        return check
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as opened:
+            source = ImageOps.exif_transpose(opened) if ImageOps is not None else opened
+            mode = str(source.mode)
+            fmt = str(opened.format or "")
+            width, height = source.size
+            rgba_image = source.convert(TRANSPARENT_IMAGE_MODE)
+            alpha = rgba_image.getchannel("A")
+            alpha_min, alpha_max = alpha.getextrema()
+            hist = alpha.histogram()
+            total = max(1, width * height)
+            transparent_count = int(hist[0])
+            near_transparent_count = sum(int(value) for value in hist[:8])
+
+            edge_width = max(1, min(8, width // 64 or 1, height // 64 or 1))
+            edge_boxes = [
+                (0, 0, width, edge_width),
+                (0, height - edge_width, width, height),
+                (0, 0, edge_width, height),
+                (width - edge_width, 0, width, height),
+            ]
+            edge_transparent = 0
+            edge_total = 0
+            for box in edge_boxes:
+                edge_alpha = alpha.crop(box)
+                edge_hist = edge_alpha.histogram()
+                edge_transparent += int(edge_hist[0])
+                edge_total += max(1, edge_alpha.size[0] * edge_alpha.size[1])
+
+            has_alpha = mode in {"RGBA", "LA"} or "transparency" in opened.info or int(alpha_min) < 255
+            transparent_ratio = transparent_count / total
+            near_transparent_ratio = near_transparent_count / total
+            edge_transparent_ratio = edge_transparent / max(1, edge_total)
+            check.update(
+                {
+                    "readable": True,
+                    "ok": mode == TRANSPARENT_IMAGE_MODE and int(alpha_min) == 0 and transparent_ratio >= 0.005,
+                    "mode": mode,
+                    "format": fmt,
+                    "size": f"{width}x{height}",
+                    "has_alpha": has_alpha,
+                    "alpha_min": int(alpha_min),
+                    "alpha_max": int(alpha_max),
+                    "transparent_ratio": transparent_ratio,
+                    "near_transparent_ratio": near_transparent_ratio,
+                    "edge_transparent_ratio": edge_transparent_ratio,
+                }
+            )
+            if not has_alpha:
+                check["reason"] = "Ảnh không có kênh alpha, nền đang opaque."
+            elif int(alpha_min) > 0:
+                check["reason"] = "Có alpha nhưng chưa có pixel alpha=0 hoàn toàn."
+            elif mode != TRANSPARENT_IMAGE_MODE:
+                check["reason"] = f"Có alpha nhưng mode hiện là {mode}, chưa phải RGBA."
+            elif transparent_ratio < 0.005:
+                check["reason"] = "Có alpha=0 nhưng vùng trong suốt quá ít để coi là ảnh không nền."
+            else:
+                check["reason"] = "Đạt: PNG/RGBA có vùng alpha=0."
+    except Exception as ex:
+        check["reason"] = f"Không đọc được ảnh để kiểm tra alpha: {ex}"
+    return check
+
+
+def render_transparency_check(check: dict[str, Any], requested: bool = False) -> None:
+    if not check or not check.get("readable"):
+        if requested:
+            st.warning(str(check.get("reason", "Không kiểm tra được nền trong suốt.")))
+        return
+    if not requested and not check.get("has_alpha"):
+        return
+
+    transparent_pct = float(check.get("transparent_ratio", 0.0)) * 100
+    edge_pct = float(check.get("edge_transparent_ratio", 0.0)) * 100
+    summary = (
+        f"Mode `{check.get('mode')}` • format `{check.get('format') or 'unknown'}` • "
+        f"alpha min/max `{check.get('alpha_min')}/{check.get('alpha_max')}` • "
+        f"transparent `{transparent_pct:.2f}%` • viền transparent `{edge_pct:.1f}%`"
+    )
+    if check.get("ok"):
+        st.success(f"Nền trong suốt: ĐẠT. {summary}")
+    elif requested:
+        st.warning(f"Nền trong suốt: CHƯA CHẮC/CHƯA ĐẠT. {summary}. {check.get('reason', '')}")
+    else:
+        st.info(f"Ảnh có alpha. {summary}")
+
+
+def transparency_check_label(check: Any, requested: bool = False) -> str:
+    if not isinstance(check, dict) or not check.get("readable"):
+        return "⚠️ Chưa kiểm tra alpha" if requested else ""
+    transparent_pct = float(check.get("transparent_ratio", 0.0)) * 100
+    if check.get("ok"):
+        return f"✅ Không nền chuẩn • {check.get('mode')} • alpha=0 • {transparent_pct:.1f}% trong suốt"
+    if requested:
+        return f"⚠️ Chưa đạt không nền • {check.get('mode')} • alpha {check.get('alpha_min')}/{check.get('alpha_max')}"
+    if check.get("has_alpha"):
+        return f"ℹ️ Có alpha • {check.get('mode')} • {transparent_pct:.1f}% trong suốt"
+    return ""
+
+
+def rgb_distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
+    return sum((int(a) - int(b)) ** 2 for a, b in zip(left, right)) ** 0.5
+
+
+def average_rgb(pixels: list[tuple[int, int, int, int]]) -> tuple[int, int, int]:
+    if not pixels:
+        return (255, 255, 255)
+    total_r = sum(int(pixel[0]) for pixel in pixels)
+    total_g = sum(int(pixel[1]) for pixel in pixels)
+    total_b = sum(int(pixel[2]) for pixel in pixels)
+    count = max(1, len(pixels))
+    return (round(total_r / count), round(total_g / count), round(total_b / count))
+
+
+def green_screen_score(pixel: tuple[int, int, int, int]) -> float:
+    r, g, b, a = pixel
+    if int(a) == 0:
+        return 1.0
+    max_rb = max(int(r), int(b))
+    green_delta = int(g) - max_rb
+    green_ratio = int(g) / max(1, max_rb)
+    saturation_gap = int(g) - min(int(r), int(b))
+    score = 0.0
+    if int(g) >= 70:
+        score += max(0.0, min(1.0, green_delta / 85.0)) * 0.55
+        score += max(0.0, min(1.0, (green_ratio - 1.05) / 0.85)) * 0.30
+        score += max(0.0, min(1.0, saturation_gap / 120.0)) * 0.15
+    return max(0.0, min(1.0, score))
+
+
+def is_chroma_green_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    return green_screen_score(pixel) >= 0.42
+
+
+def is_strong_chroma_green_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    r, g, b, a = pixel
+    if int(a) == 0:
+        return True
+    return green_screen_score(pixel) >= 0.62 or (
+        int(g) >= 90
+        and int(g) - int(r) >= 30
+        and int(g) - int(b) >= 25
+        and int(g) >= int(max(r, b)) * 1.15
+    )
+
+
+def blue_screen_score(pixel: tuple[int, int, int, int]) -> float:
+    r, g, b, a = pixel
+    if int(a) == 0:
+        return 1.0
+    max_rg = max(int(r), int(g))
+    blue_delta = int(b) - max_rg
+    blue_ratio = int(b) / max(1, max_rg)
+    saturation_gap = int(b) - min(int(r), int(g))
+    score = 0.0
+    if int(b) >= 70:
+        score += max(0.0, min(1.0, blue_delta / 85.0)) * 0.55
+        score += max(0.0, min(1.0, (blue_ratio - 1.05) / 0.85)) * 0.30
+        score += max(0.0, min(1.0, saturation_gap / 120.0)) * 0.15
+    return max(0.0, min(1.0, score))
+
+
+def is_chroma_blue_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    return blue_screen_score(pixel) >= 0.42
+
+
+def is_strong_chroma_blue_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    r, g, b, a = pixel
+    if int(a) == 0:
+        return True
+    return blue_screen_score(pixel) >= 0.62 or (
+        int(b) >= 90
+        and int(b) - int(r) >= 25
+        and int(b) - int(g) >= 30
+        and int(b) >= int(max(r, g)) * 1.15
+    )
+
+def magenta_screen_score(pixel: tuple[int, int, int, int]) -> float:
+    r, g, b, a = pixel
+    if int(a) == 0:
+        return 1.0
+    min_rb = min(int(r), int(b))
+    max_rb = max(int(r), int(b))
+    magenta_delta = min_rb - int(g)
+    rb_balance = 1.0 - min(1.0, abs(int(r) - int(b)) / max(1, max_rb))
+    magenta_ratio = min_rb / max(1, int(g))
+    score = 0.0
+    if int(r) >= 70 and int(b) >= 70:
+        score += max(0.0, min(1.0, magenta_delta / 85.0)) * 0.55
+        score += max(0.0, min(1.0, (magenta_ratio - 1.05) / 0.85)) * 0.25
+        score += max(0.0, min(1.0, rb_balance)) * 0.20
+    return max(0.0, min(1.0, score))
+
+def is_chroma_magenta_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    return magenta_screen_score(pixel) >= 0.42
+
+def is_strong_chroma_magenta_pixel(pixel: tuple[int, int, int, int]) -> bool:
+    r, g, b, a = pixel
+    if int(a) == 0:
+        return True
+    return magenta_screen_score(pixel) >= 0.62 or (
+        int(r) >= 90
+        and int(b) >= 90
+        and min(int(r), int(b)) - int(g) >= 30
+        and min(int(r), int(b)) >= int(g) * 1.15
+    )
+
+
+def _has_neighbor(mask: bytearray, idx: int, width: int, height: int) -> bool:
+    x = idx % width
+    if x > 0 and mask[idx - 1]:
+        return True
+    if x < width - 1 and mask[idx + 1]:
+        return True
+    if idx >= width and mask[idx - width]:
+        return True
+    return bool(idx < width * (height - 1) and mask[idx + width])
+
+
+def remove_green_screen_background(image: Any) -> Any:
+    width, height = image.size
+    if width < 2 or height < 2:
+        return image
+
+    pixels = list(image.getdata())
+    green_mask = bytearray(1 if is_chroma_green_pixel(pixel) else 0 for pixel in pixels)
+    strong_green_mask = bytearray(1 if is_strong_chroma_green_pixel(pixel) else 0 for pixel in pixels)
+    visited = bytearray(width * height)
+    stack: list[int] = []
+
+    for x in range(width):
+        top = x
+        bottom = (height - 1) * width + x
+        if green_mask[top]:
+            stack.append(top)
+        if green_mask[bottom]:
+            stack.append(bottom)
+    for y in range(height):
+        left = y * width
+        right = y * width + (width - 1)
+        if green_mask[left]:
+            stack.append(left)
+        if green_mask[right]:
+            stack.append(right)
+
+    while stack:
+        idx = stack.pop()
+        if visited[idx] or not green_mask[idx]:
+            continue
+        visited[idx] = 1
+        x = idx % width
+        if x > 0:
+            stack.append(idx - 1)
+        if x < width - 1:
+            stack.append(idx + 1)
+        if idx >= width:
+            stack.append(idx - width)
+        if idx < width * (height - 1):
+            stack.append(idx + width)
+
+    remove_mask = bytearray(visited)
+    for idx, is_strong_green in enumerate(strong_green_mask):
+        if is_strong_green:
+            remove_mask[idx] = 1
+
+    for _ in range(2):
+        grown = bytearray(remove_mask)
+        for idx, pixel in enumerate(pixels):
+            if remove_mask[idx]:
+                continue
+            score = green_screen_score(pixel)
+            if score >= 0.30 and _has_neighbor(remove_mask, idx, width, height):
+                grown[idx] = 1
+        remove_mask = grown
+
+    removed_count = sum(remove_mask)
+    if removed_count < max(16, int(width * height * 0.01)):
+        return image
+
+    output_pixels: list[tuple[int, int, int, int]] = []
+    for idx, (r, g, b, a) in enumerate(pixels):
+        if remove_mask[idx]:
+            output_pixels.append((r, g, b, 0))
+            continue
+        score = green_screen_score((r, g, b, a))
+        if score >= 0.18 and _has_neighbor(remove_mask, idx, width, height):
+            softened_alpha = max(0, min(255, round(int(a) * (1.0 - min(0.85, score * 1.25)))))
+            clean_r = min(255, int(r) + round(max(0, int(g) - max(int(r), int(b))) * 0.15))
+            clean_g = min(int(g), max(int(r), int(b), round(int(g) * (1.0 - score * 0.55))))
+            output_pixels.append((clean_r, clean_g, b, softened_alpha))
+        else:
+            output_pixels.append((r, g, b, a))
+
+    output_image = Image.new(TRANSPARENT_IMAGE_MODE, image.size, TRANSPARENT_RGBA_COLOR)
+    output_image.putdata(output_pixels)
+    return output_image
+
+
+def remove_blue_screen_background(image: Any) -> Any:
+    width, height = image.size
+    if width < 2 or height < 2:
+        return image
+
+    pixels = list(image.getdata())
+    blue_mask = bytearray(1 if is_chroma_blue_pixel(pixel) else 0 for pixel in pixels)
+    strong_blue_mask = bytearray(1 if is_strong_chroma_blue_pixel(pixel) else 0 for pixel in pixels)
+    visited = bytearray(width * height)
+    stack: list[int] = []
+
+    for x in range(width):
+        top = x
+        bottom = (height - 1) * width + x
+        if blue_mask[top]:
+            stack.append(top)
+        if blue_mask[bottom]:
+            stack.append(bottom)
+    for y in range(height):
+        left = y * width
+        right = y * width + (width - 1)
+        if blue_mask[left]:
+            stack.append(left)
+        if blue_mask[right]:
+            stack.append(right)
+
+    while stack:
+        idx = stack.pop()
+        if visited[idx] or not blue_mask[idx]:
+            continue
+        visited[idx] = 1
+        x = idx % width
+        if x > 0:
+            stack.append(idx - 1)
+        if x < width - 1:
+            stack.append(idx + 1)
+        if idx >= width:
+            stack.append(idx - width)
+        if idx < width * (height - 1):
+            stack.append(idx + width)
+
+    remove_mask = bytearray(visited)
+    for idx, is_strong_blue in enumerate(strong_blue_mask):
+        if is_strong_blue:
+            remove_mask[idx] = 1
+
+    for _ in range(2):
+        grown = bytearray(remove_mask)
+        for idx, pixel in enumerate(pixels):
+            if remove_mask[idx]:
+                continue
+            score = blue_screen_score(pixel)
+            if score >= 0.30 and _has_neighbor(remove_mask, idx, width, height):
+                grown[idx] = 1
+        remove_mask = grown
+
+    removed_count = sum(remove_mask)
+    if removed_count < max(16, int(width * height * 0.01)):
+        return image
+
+    output_pixels: list[tuple[int, int, int, int]] = []
+    for idx, (r, g, b, a) in enumerate(pixels):
+        if remove_mask[idx]:
+            output_pixels.append((r, g, b, 0))
+            continue
+        score = blue_screen_score((r, g, b, a))
+        if score >= 0.18 and _has_neighbor(remove_mask, idx, width, height):
+            softened_alpha = max(0, min(255, round(int(a) * (1.0 - min(0.85, score * 1.25)))))
+            blue_excess = max(0, int(b) - max(int(r), int(g)))
+            clean_r = min(255, int(r) + round(blue_excess * 0.10))
+            clean_g = min(255, int(g) + round(blue_excess * 0.10))
+            clean_b = min(int(b), max(int(r), int(g), round(int(b) * (1.0 - score * 0.55))))
+            output_pixels.append((clean_r, clean_g, clean_b, softened_alpha))
+        else:
+            output_pixels.append((r, g, b, a))
+
+    output_image = Image.new(TRANSPARENT_IMAGE_MODE, image.size, TRANSPARENT_RGBA_COLOR)
+    output_image.putdata(output_pixels)
+    return output_image
+
+def remove_magenta_screen_background(image: Any) -> Any:
+    width, height = image.size
+    if width < 2 or height < 2:
+        return image
+
+    pixels = list(image.getdata())
+    magenta_mask = bytearray(1 if is_chroma_magenta_pixel(pixel) else 0 for pixel in pixels)
+    strong_magenta_mask = bytearray(1 if is_strong_chroma_magenta_pixel(pixel) else 0 for pixel in pixels)
+    visited = bytearray(width * height)
+    stack: list[int] = []
+
+    for x in range(width):
+        top = x
+        bottom = (height - 1) * width + x
+        if magenta_mask[top]:
+            stack.append(top)
+        if magenta_mask[bottom]:
+            stack.append(bottom)
+    for y in range(height):
+        left = y * width
+        right = y * width + (width - 1)
+        if magenta_mask[left]:
+            stack.append(left)
+        if magenta_mask[right]:
+            stack.append(right)
+
+    while stack:
+        idx = stack.pop()
+        if visited[idx] or not magenta_mask[idx]:
+            continue
+        visited[idx] = 1
+        x = idx % width
+        if x > 0:
+            stack.append(idx - 1)
+        if x < width - 1:
+            stack.append(idx + 1)
+        if idx >= width:
+            stack.append(idx - width)
+        if idx < width * (height - 1):
+            stack.append(idx + width)
+
+    remove_mask = bytearray(visited)
+    for idx, is_strong_magenta in enumerate(strong_magenta_mask):
+        if is_strong_magenta:
+            remove_mask[idx] = 1
+
+    for _ in range(2):
+        grown = bytearray(remove_mask)
+        for idx, pixel in enumerate(pixels):
+            if remove_mask[idx]:
+                continue
+            score = magenta_screen_score(pixel)
+            if score >= 0.30 and _has_neighbor(remove_mask, idx, width, height):
+                grown[idx] = 1
+        remove_mask = grown
+
+    removed_count = sum(remove_mask)
+    if removed_count < max(16, int(width * height * 0.01)):
+        return image
+
+    output_pixels: list[tuple[int, int, int, int]] = []
+    for idx, (r, g, b, a) in enumerate(pixels):
+        if remove_mask[idx]:
+            output_pixels.append((r, g, b, 0))
+            continue
+        score = magenta_screen_score((r, g, b, a))
+        if score >= 0.18 and _has_neighbor(remove_mask, idx, width, height):
+            softened_alpha = max(0, min(255, round(int(a) * (1.0 - min(0.85, score * 1.25)))))
+            magenta_excess = max(0, min(int(r), int(b)) - int(g))
+            clean_r = max(int(g), round(int(r) * (1.0 - score * 0.45)))
+            clean_g = min(255, int(g) + round(magenta_excess * 0.10))
+            clean_b = max(int(g), round(int(b) * (1.0 - score * 0.45)))
+            output_pixels.append((clean_r, clean_g, clean_b, softened_alpha))
+        else:
+            output_pixels.append((r, g, b, a))
+
+    output_image = Image.new(TRANSPARENT_IMAGE_MODE, image.size, TRANSPARENT_RGBA_COLOR)
+    output_image.putdata(output_pixels)
+    return output_image
+
+
+def remove_solid_corner_background(image: Any) -> Any:
+    width, height = image.size
+    if width < 4 or height < 4:
+        return image
+
+    sample_size = max(2, min(18, width // 28, height // 28))
+    boxes = [
+        (0, 0, sample_size, sample_size),
+        (width - sample_size, 0, width, sample_size),
+        (0, height - sample_size, sample_size, height),
+        (width - sample_size, height - sample_size, width, height),
+    ]
+    corner_colors = [average_rgb(list(image.crop(box).getdata())) for box in boxes]
+    corner_spread = max(
+        rgb_distance(left, right)
+        for left in corner_colors
+        for right in corner_colors
+    )
+    if corner_spread > 42:
+        return image
+
+    background_rgb = average_rgb([(r, g, b, 255) for r, g, b in corner_colors])
+    hard_threshold = 34
+    soft_threshold = 62
+    changed = 0
+    new_pixels: list[tuple[int, int, int, int]] = []
+    for r, g, b, a in image.getdata():
+        dist = rgb_distance((r, g, b), background_rgb)
+        if dist <= hard_threshold:
+            new_pixels.append((r, g, b, TRANSPARENT_RGBA_COLOR[3]))
+            changed += 1
+        elif dist <= soft_threshold:
+            ratio = (dist - hard_threshold) / max(1, soft_threshold - hard_threshold)
+            new_pixels.append((r, g, b, max(0, min(255, round(int(a) * ratio)))))
+            changed += 1
+        else:
+            new_pixels.append((r, g, b, a))
+
+    if changed / max(1, width * height) < 0.08:
+        return image
+
+    output_image = Image.new(TRANSPARENT_IMAGE_MODE, image.size, TRANSPARENT_RGBA_COLOR)
+    output_image.putdata(new_pixels)
+    return output_image
+
+
+BACKGROUND_REMOVAL_METHOD_LABELS = {
+    "existing_alpha": "Ảnh đã có nền trong suốt",
+    "green_chroma": f"Xóa nền xanh lá {GREEN_SCREEN_HEX}",
+    "blue_chroma": f"Xóa nền xanh biển {BLUE_SCREEN_HEX}",
+    "magenta_chroma": f"Xóa nền hồng {MAGENTA_SCREEN_HEX}",
+    "solid_corner": "Xóa nền trơn theo màu ở 4 góc",
+    "fallback": "Tự xử lý nền trơn/góc ảnh",
+}
+
+def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#{:02X}{:02X}{:02X}".format(
+        max(0, min(255, int(rgb[0]))),
+        max(0, min(255, int(rgb[1]))),
+        max(0, min(255, int(rgb[2]))),
+    )
+
+def _sample_image_edge_pixels(image: Any, max_samples: int = 4096) -> list[tuple[int, int, int, int]]:
+    width, height = image.size
+    if width < 1 or height < 1:
+        return []
+    step = max(1, max(width, height) // 160)
+    px = image.load()
+    samples: list[tuple[int, int, int, int]] = []
+    for x in range(0, width, step):
+        samples.append(px[x, 0])
+        if height > 1:
+            samples.append(px[x, height - 1])
+    for y in range(0, height, step):
+        samples.append(px[0, y])
+        if width > 1:
+            samples.append(px[width - 1, y])
+    if len(samples) > max_samples:
+        samples = samples[::max(1, len(samples) // max_samples)]
+    return samples
+
+def _sample_image_corner_pixels(image: Any) -> tuple[list[tuple[int, int, int, int]], list[tuple[int, int, int]]]:
+    width, height = image.size
+    if width < 1 or height < 1:
+        return [], []
+    sample_size = max(1, min(24, max(1, width // 12), max(1, height // 12), width, height))
+    boxes = [
+        (0, 0, sample_size, sample_size),
+        (max(0, width - sample_size), 0, width, sample_size),
+        (0, max(0, height - sample_size), sample_size, height),
+        (max(0, width - sample_size), max(0, height - sample_size), width, height),
+    ]
+    corner_pixels: list[tuple[int, int, int, int]] = []
+    corner_colors: list[tuple[int, int, int]] = []
+    for box in boxes:
+        pixels = list(image.crop(box).getdata())
+        corner_pixels.extend(pixels)
+        corner_colors.append(average_rgb(pixels))
+    return corner_pixels, corner_colors
+
+def _ratio_for_score(
+    pixels: list[tuple[int, int, int, int]],
+    score_fn: Any,
+    threshold: float = 0.42,
+) -> tuple[float, float]:
+    if not pixels:
+        return 0.0, 0.0
+    scores = [float(score_fn(pixel)) for pixel in pixels]
+    ratio = sum(1 for score in scores if score >= threshold) / max(1, len(scores))
+    avg_score = sum(scores) / max(1, len(scores))
+    return ratio, avg_score
+
+def analyze_background_for_removal(image_bytes: bytes, before_check: dict[str, Any] | None = None) -> dict[str, Any]:
+    analysis: dict[str, Any] = {
+        "readable": False,
+        "reason": "",
+        "method": "fallback",
+        "method_label": BACKGROUND_REMOVAL_METHOD_LABELS["fallback"],
+    }
+    if Image is None:
+        analysis["reason"] = "Pillow chưa khả dụng nên không phân tích được ảnh."
+        return analysis
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as opened:
+            source = ImageOps.exif_transpose(opened) if ImageOps is not None else opened
+            rgba_image = source.convert(TRANSPARENT_IMAGE_MODE)
+    except Exception as ex:
+        analysis["reason"] = f"Không đọc được ảnh: {ex}"
+        return analysis
+
+    edge_pixels = _sample_image_edge_pixels(rgba_image)
+    corner_pixels, corner_colors = _sample_image_corner_pixels(rgba_image)
+    edge_rgb = average_rgb(edge_pixels)
+    corner_rgb = average_rgb(corner_pixels)
+    corner_spread = max(
+        [rgb_distance(left, right) for left in corner_colors for right in corner_colors] or [0.0]
+    )
+    edge_green_ratio, edge_green_score = _ratio_for_score(edge_pixels, green_screen_score)
+    edge_blue_ratio, edge_blue_score = _ratio_for_score(edge_pixels, blue_screen_score)
+    edge_magenta_ratio, edge_magenta_score = _ratio_for_score(edge_pixels, magenta_screen_score)
+    corner_green_ratio, _corner_green_score = _ratio_for_score(corner_pixels, green_screen_score)
+    corner_blue_ratio, _corner_blue_score = _ratio_for_score(corner_pixels, blue_screen_score)
+    corner_magenta_ratio, _corner_magenta_score = _ratio_for_score(corner_pixels, magenta_screen_score)
+    edge_solid_ratio = 0.0
+    if edge_pixels:
+        edge_solid_ratio = sum(
+            1 for r, g, b, _a in edge_pixels
+            if rgb_distance((r, g, b), corner_rgb) <= 62
+        ) / max(1, len(edge_pixels))
+
+    transparent_ratio = 0.0
+    edge_transparent_ratio = 0.0
+    if before_check:
+        transparent_ratio = float(before_check.get("transparent_ratio", 0.0) or 0.0)
+        edge_transparent_ratio = float(before_check.get("edge_transparent_ratio", 0.0) or 0.0)
+
+    analysis.update(
+        {
+            "readable": True,
+            "size": f"{rgba_image.size[0]}x{rgba_image.size[1]}",
+            "edge_rgb": edge_rgb,
+            "edge_hex": rgb_to_hex(edge_rgb),
+            "corner_rgb": corner_rgb,
+            "corner_hex": rgb_to_hex(corner_rgb),
+            "corner_spread": round(float(corner_spread), 2),
+            "edge_solid_ratio": round(edge_solid_ratio, 4),
+            "edge_green_ratio": round(edge_green_ratio, 4),
+            "edge_blue_ratio": round(edge_blue_ratio, 4),
+            "edge_magenta_ratio": round(edge_magenta_ratio, 4),
+            "edge_green_score": round(edge_green_score, 4),
+            "edge_blue_score": round(edge_blue_score, 4),
+            "edge_magenta_score": round(edge_magenta_score, 4),
+            "corner_green_ratio": round(corner_green_ratio, 4),
+            "corner_blue_ratio": round(corner_blue_ratio, 4),
+            "corner_magenta_ratio": round(corner_magenta_ratio, 4),
+            "transparent_ratio": round(transparent_ratio, 4),
+            "edge_transparent_ratio": round(edge_transparent_ratio, 4),
+        }
+    )
+    return analysis
+
+def _select_background_removal_method(analysis: dict[str, Any], preferred: str = "auto") -> tuple[str, str]:
+    preferred_key = str(preferred or "auto").strip().lower()
+    forced_methods = {
+        "green": "green_chroma",
+        "blue": "blue_chroma",
+        "magenta": "magenta_chroma",
+        "pink": "magenta_chroma",
+        "solid": "solid_corner",
+        "corner": "solid_corner",
+    }
+    if preferred_key in forced_methods:
+        method = forced_methods[preferred_key]
+        return method, f"Người dùng ưu tiên: {BACKGROUND_REMOVAL_METHOD_LABELS[method]}."
+
+    if float(analysis.get("transparent_ratio", 0.0) or 0.0) >= 0.005 and float(analysis.get("edge_transparent_ratio", 0.0) or 0.0) >= 0.25:
+        return "existing_alpha", "Ảnh đã có alpha tốt ở viền, giữ nguyên PNG trong suốt."
+
+    chroma_methods = [
+        (float(analysis.get("edge_green_ratio", 0.0) or 0.0), float(analysis.get("corner_green_ratio", 0.0) or 0.0), "green_chroma"),
+        (float(analysis.get("edge_blue_ratio", 0.0) or 0.0), float(analysis.get("corner_blue_ratio", 0.0) or 0.0), "blue_chroma"),
+        (float(analysis.get("edge_magenta_ratio", 0.0) or 0.0), float(analysis.get("corner_magenta_ratio", 0.0) or 0.0), "magenta_chroma"),
+    ]
+    chroma_methods.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    top_edge, top_corner, top_method = chroma_methods[0]
+    second_edge = chroma_methods[1][0] if len(chroma_methods) > 1 else 0.0
+    corner_spread = float(analysis.get("corner_spread", 999.0) or 999.0)
+    edge_solid_ratio = float(analysis.get("edge_solid_ratio", 0.0) or 0.0)
+
+    if top_edge >= 0.38 and top_edge >= max(0.05, second_edge * 1.18):
+        return top_method, f"Viền ảnh khớp chroma cao ({top_edge:.0%}), chọn {BACKGROUND_REMOVAL_METHOD_LABELS[top_method]}."
+    if top_corner >= 0.62 and top_edge >= 0.18:
+        return top_method, f"Các góc ảnh là màu chroma rõ ({top_corner:.0%}), chọn {BACKGROUND_REMOVAL_METHOD_LABELS[top_method]}."
+    if corner_spread <= 42 and edge_solid_ratio >= 0.48:
+        corner_value = analysis.get("corner_rgb", (255, 255, 255))
+        return "solid_corner", f"Bốn góc gần cùng một màu ({rgb_to_hex(tuple(corner_value))}), chọn nền trơn."
+    if top_edge >= 0.22:
+        return top_method, f"Có dấu hiệu chroma vừa đủ ở viền ({top_edge:.0%}), thử {BACKGROUND_REMOVAL_METHOD_LABELS[top_method]} trước."
+    if corner_spread <= 70 and edge_solid_ratio >= 0.34:
+        return "solid_corner", "Không thấy chroma rõ, nhưng nền viền/góc khá đồng màu nên dùng tách nền trơn."
+    return "solid_corner", "Không nhận diện được chroma rõ; thử tách theo màu nền ở 4 góc."
+
+def _ordered_background_removal_candidates(selected_method: str, analysis: dict[str, Any], preferred: str = "auto") -> list[str]:
+    methods: list[str] = []
+
+    def add(method: str) -> None:
+        if method not in {"", "existing_alpha"} and method not in methods:
+            methods.append(method)
+
+    add(selected_method)
+    chroma_methods = [
+        (float(analysis.get("edge_green_ratio", 0.0) or 0.0), "green_chroma"),
+        (float(analysis.get("edge_blue_ratio", 0.0) or 0.0), "blue_chroma"),
+        (float(analysis.get("edge_magenta_ratio", 0.0) or 0.0), "magenta_chroma"),
+    ]
+    for ratio, method in sorted(chroma_methods, reverse=True):
+        if ratio >= 0.12 or str(preferred or "auto").lower() != "auto":
+            add(method)
+    add("solid_corner")
+    return methods
+
+def _apply_background_removal_method(image: Any, method: str) -> Any:
+    if method == "green_chroma":
+        return remove_green_screen_background(image.copy())
+    if method == "blue_chroma":
+        return remove_blue_screen_background(image.copy())
+    if method == "magenta_chroma":
+        return remove_magenta_screen_background(image.copy())
+    if method == "solid_corner":
+        return remove_solid_corner_background(image.copy())
+    return image.copy()
+
+def _rgba_image_to_png_bytes(image: Any) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+def auto_remove_analyzed_background(image_bytes: bytes, preferred: str = "auto") -> tuple[bytes, dict[str, Any]]:
+    before_check = inspect_image_transparency(image_bytes)
+    analysis = analyze_background_for_removal(image_bytes, before_check)
+    analysis["before_check"] = before_check
+    if Image is None or not analysis.get("readable"):
+        analysis["after_check"] = before_check
+        return image_bytes, analysis
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as opened:
+            source = ImageOps.exif_transpose(opened) if ImageOps is not None else opened
+            rgba_image = source.convert(TRANSPARENT_IMAGE_MODE)
+    except Exception as ex:
+        analysis["reason"] = f"Không đọc được ảnh để tách nền: {ex}"
+        analysis["after_check"] = before_check
+        return image_bytes, analysis
+
+    selected_method, select_reason = _select_background_removal_method(analysis, preferred)
+    analysis["selected_method"] = selected_method
+    analysis["selected_method_label"] = BACKGROUND_REMOVAL_METHOD_LABELS.get(selected_method, selected_method)
+    analysis["reason"] = select_reason
+
+    if selected_method == "existing_alpha":
+        output_bytes = _rgba_image_to_png_bytes(rgba_image)
+        after_check = inspect_image_transparency(output_bytes)
+        analysis["method"] = selected_method
+        analysis["method_label"] = BACKGROUND_REMOVAL_METHOD_LABELS[selected_method]
+        analysis["after_check"] = after_check
+        analysis["attempts"] = []
+        return output_bytes, analysis
+
+    original_bytes = _rgba_image_to_png_bytes(rgba_image)
+    best_bytes = original_bytes
+    best_method = "fallback"
+    best_check = inspect_image_transparency(original_bytes)
+    best_score = float(best_check.get("transparent_ratio", 0.0) or 0.0) + float(best_check.get("edge_transparent_ratio", 0.0) or 0.0) * 0.75
+    attempts: list[dict[str, Any]] = []
+
+    for method in _ordered_background_removal_candidates(selected_method, analysis, preferred):
+        processed_image = _apply_background_removal_method(rgba_image, method)
+        processed_bytes = _rgba_image_to_png_bytes(processed_image)
+        check = inspect_image_transparency(processed_bytes)
+        transparent_ratio = float(check.get("transparent_ratio", 0.0) or 0.0)
+        edge_transparent_ratio = float(check.get("edge_transparent_ratio", 0.0) or 0.0)
+        score = transparent_ratio + edge_transparent_ratio * 0.75
+        if check.get("ok"):
+            score += 2.0
+        attempts.append(
+            {
+                "method": method,
+                "label": BACKGROUND_REMOVAL_METHOD_LABELS.get(method, method),
+                "transparent_ratio": round(transparent_ratio, 4),
+                "edge_transparent_ratio": round(edge_transparent_ratio, 4),
+                "ok": bool(check.get("ok")),
+            }
+        )
+        if score > best_score:
+            best_score = score
+            best_bytes = processed_bytes
+            best_method = method
+            best_check = check
+        if check.get("ok") and method == selected_method:
+            break
+
+    analysis["attempts"] = attempts
+    analysis["method"] = best_method
+    analysis["method_label"] = BACKGROUND_REMOVAL_METHOD_LABELS.get(best_method, best_method)
+    analysis["after_check"] = best_check
+    if best_method != selected_method:
+        analysis["reason"] = f"{select_reason} Kết quả tốt nhất sau thử fallback: {analysis['method_label']}."
+    return best_bytes, analysis
+
+def ensure_transparent_png_rgba_bytes(
+    image_bytes: bytes,
+    remove_green_screen: bool = False,
+    remove_blue_screen: bool = False,
+) -> bytes:
+    if Image is None:
+        return image_bytes
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as opened:
+            source = ImageOps.exif_transpose(opened) if ImageOps is not None else opened
+            rgba_image = source.convert(TRANSPARENT_IMAGE_MODE)
+        if remove_blue_screen:
+            rgba_image = remove_blue_screen_background(rgba_image)
+        if remove_green_screen:
+            rgba_image = remove_green_screen_background(rgba_image)
+        if not rgba_has_transparent_pixels(rgba_image):
+            rgba_image = remove_solid_corner_background(rgba_image)
+        buffer = io.BytesIO()
+        rgba_image.save(buffer, format="PNG")
+        return buffer.getvalue()
+    except Exception:
+        return image_bytes
+
+
+def normalize_transparent_image_result(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    if not payload_requests_transparent_background(payload):
+        return result
+    if result.get("kind") not in {"binary", "b64_json"}:
+        return result
+    image_bytes = result.get("image_bytes")
+    if not isinstance(image_bytes, bytes) or not image_bytes:
+        return result
+    normalized = dict(result)
+    before_check = inspect_image_transparency(image_bytes)
+    keep_raw_chroma = payload_requests_chroma_screen_removal(payload)
+    normalized_bytes = ensure_transparent_png_rgba_bytes(
+        image_bytes,
+        remove_green_screen=payload_requests_green_screen_removal(payload),
+        remove_blue_screen=payload_requests_blue_screen_removal(payload),
+    )
+    after_check = inspect_image_transparency(normalized_bytes)
+    normalized["image_bytes"] = normalized_bytes
+    normalized["content_type"] = "image/png"
+    normalized["transparent_requested"] = True
+    normalized["transparent_check_before"] = before_check
+    normalized["transparent_check"] = after_check
+    normalized["transparent_postprocessed"] = bool(before_check.get("readable")) and before_check != after_check
+    if keep_raw_chroma:
+        normalized["raw_chroma_image_bytes"] = image_bytes
+        normalized["raw_chroma_content_type"] = result.get("content_type", "image/png")
+    return normalized
+
+
+def build_raw_chroma_output_path(output_path: str | Path) -> Path:
+    path = Path(output_path)
+    suffix = path.suffix or ".png"
+    return path.with_name("_raw_chroma") / f"{path.stem}_raw_chroma{suffix}"
 
 
 def save_image(image_bytes: bytes, output_path: str) -> Path:
@@ -1310,8 +2596,19 @@ def build_batch_error_summary(errors: list[str]) -> tuple[str, str]:
 
     if is_codex_entitlement_error(lowered_errors):
         hint = (
-            "Tài khoản Codex/ChatGPT phía server không có Plus/Pro. "
-            "Đổi sang `openai/gpt-image-1` hoặc `openai/dall-e-3`, hoặc đăng nhập gói Plus/Pro."
+            "Tài khoản/provider `cx` phía server thiếu quyền hoặc session hết hạn. "
+            "Đăng nhập lại/cập nhật provider ở 9Router, hoặc chọn model khác đang có trong `/v1/models/image`."
+        )
+    elif is_upstream_headers_timeout_error(lowered_errors):
+        hint = (
+            "9Router/upstream đang tự ngắt headers timeout khoảng 30s. "
+            "Tăng timeout trong app không đủ; cần tăng timeout server 9Router hoặc giảm request còn 1 ảnh, quality low/medium, ít ảnh mẫu hơn."
+        )
+    elif is_transparent_background_not_supported_error(lowered_errors):
+        hint = (
+            "Model đang dùng không hỗ trợ `background=transparent` native. "
+            "Không nền chuẩn cần dùng OpenAI Images API với `gpt-image-1.5`, `gpt-image-1` hoặc `gpt-image-1-mini`; "
+            "`gpt-image-2` hiện không hỗ trợ transparent background."
         )
     elif is_codex_upgrade_required_error(lowered_errors):
         hint = "Model yêu cầu bản Codex mới hơn. Hãy nâng cấp Codex hoặc đổi model sang gpt-5.4-image."
@@ -1370,8 +2667,7 @@ def unique_list(items: list[str]) -> list[str]:
 def suggest_top_model(loaded_models: list[str], current_model: str = "") -> str:
     image_models = [item for item in loaded_models if str(item).strip()]
     current = str(current_model or "").strip()
-    current_is_available = bool(current) and current in image_models
-    pool = unique_list(image_models + ([current] if current_is_available else []) + [DEFAULT_MODEL])
+    pool = unique_list(([current] if current else []) + image_models + [DEFAULT_MODEL])
     for preferred in MODEL_TOP_PRIORITY:
         preferred_suffix = preferred.strip().lower().split("/", 1)[-1]
         if not preferred_suffix:
@@ -1403,7 +2699,7 @@ def load_models_into_state(base_url: str, api_key: str, enforce_top_model: bool 
     current_model = str(st.session_state.get("manual_model", "")).strip()
     if enforce_top_model or not current_model or (st.session_state.models and current_model not in st.session_state.models):
         st.session_state.manual_model = top_model
-    return True, f"?? n?p {len(st.session_state.models)} model"
+    return True, f"Đã nạp {len(st.session_state.models)} model"
 
 
 def apply_everyday_studio_defaults() -> None:
@@ -1411,29 +2707,13 @@ def apply_everyday_studio_defaults() -> None:
         [str(item) for item in st.session_state.get("models", []) if isinstance(item, str)],
         str(st.session_state.get("manual_model", "")),
     )
-
-    st.session_state.quick_scene = DEFAULT_SCENE_PRESET if DEFAULT_SCENE_PRESET in SCENE_PRESETS else list(SCENE_PRESETS.keys())[0]
     st.session_state.quick_style = "Không áp phong cách"
     st.session_state.quick_quality_profile = "Cân bằng"
     st.session_state.quick_aspect_ratio = "1:1"
     st.session_state.quick_size_preset = "Vuông 1024"
     st.session_state.quick_subject = ""
-    st.session_state.quick_mood = ""
-    st.session_state.quick_lighting = ""
-    st.session_state.quick_camera = ""
-
-    st.session_state.create_quality_tier = "Fast"
-    st.session_state.create_count_ui = 1
-    st.session_state.create_response_format_ui = "binary"
     st.session_state.studio_count = 1
     st.session_state.studio_response_format = "binary"
-
-    st.session_state.quick_use_optimizer = False
-    st.session_state.quick_auto_negative = False
-    st.session_state.create_use_reference = False
-    st.session_state.create_reference_mode = "1 ảnh"
-    st.session_state.create_modifiers = []
-    st.session_state.create_extra_json = "{}"
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
@@ -1441,7 +2721,7 @@ def parse_json_object(text: str) -> dict[str, Any]:
         return {}
     loaded = json.loads(text)
     if not isinstance(loaded, dict):
-        raise ValueError("JSON ph\u1ea3i l\u00e0 object")
+        raise ValueError("JSON phải là object")
     return loaded
 
 
@@ -1709,7 +2989,7 @@ def collect_reference_images(section_key: str, allow_multiple: bool, compact_mod
         )
 
     save_inputs = False
-    if bool(st.session_state.get("ui_debug_mode", False)):
+    if True:
         with st.expander("Tùy chọn ảnh tham chiếu", expanded=False):
             save_inputs = st.checkbox(
                 "Lưu bản sao ảnh tải lên vào outputs/inputs",
@@ -1877,7 +3157,7 @@ def run_payload_generation(
     show_inline_preview: bool = True,
 ) -> None:
     st.session_state.last_payload = payload
-    if bool(st.session_state.get("ui_debug_mode", False)):
+    if True:
         with st.expander("Payload sẽ gửi", expanded=False):
             st.json(payload)
 
@@ -1942,7 +3222,7 @@ def run_payload_generation(
     st.info(
         f"Đang chia {requested_count} ảnh qua {len(key_pool)} API • mode {mode_note} • chạy song song {max_workers} luồng."
     )
-    if bool(st.session_state.get("ui_debug_mode", False)):
+    if True:
         st.caption(
             "Phân bổ key: "
             + " • ".join([f"{mask_api_key(k)}: {v}" for k, v in key_summary.items()])
@@ -1961,6 +3241,66 @@ def run_payload_generation(
     base_output_path = Path(output_file)
     base_ext = base_output_path.suffix or ".png"
     base_stem = base_output_path.stem or "out"
+
+    # Live grid: tạo placeholder ngay, mỗi ảnh xong là cập nhật vào ô của nó.
+    # Luôn hiện trong nhánh song song để người dùng thấy ảnh ngay khi xong.
+    st.markdown(f"##### Kết quả live ({workflow_name})")
+    live_grid_cols = min(4, max(1, requested_count))
+    live_columns = st.columns(live_grid_cols)
+    live_placeholders: dict[int, Any] = {}
+    for idx in range(1, requested_count + 1):
+        with live_columns[(idx - 1) % live_grid_cols]:
+            live_placeholders[idx] = st.empty()
+            with live_placeholders[idx].container():
+                st.markdown(
+                    f"<div class='panel-card' style='min-height:180px;display:grid;"
+                    f"place-items:center;text-align:center;opacity:0.7;'>"
+                    f"<div>⏳<br><small>Ảnh #{idx} đang vẽ…</small></div></div>",
+                    unsafe_allow_html=True,
+                )
+
+    def _render_live_tile(image_idx: int, result_dict: dict[str, Any], saved_path_str: str) -> None:
+        placeholder = live_placeholders.get(image_idx)
+        if placeholder is None:
+            return
+        kind = result_dict.get("kind")
+        with placeholder.container():
+            try:
+                if kind in {"binary", "b64_json"}:
+                    img_bytes = result_dict.get("image_bytes", b"")
+                    if isinstance(img_bytes, bytes) and img_bytes:
+                        st.image(img_bytes, use_container_width=True)
+                        download_key = f"live_dl_{workflow_name}_{image_idx}_{timestamp_slug()}"
+                        st.download_button(
+                            f"⬇ Tải ảnh #{image_idx}",
+                            data=img_bytes,
+                            file_name=Path(saved_path_str).name if saved_path_str else f"img_{image_idx}.png",
+                            mime="image/png",
+                            key=download_key,
+                            use_container_width=True,
+                        )
+                    elif saved_path_str and Path(saved_path_str).exists():
+                        st.image(saved_path_str, use_container_width=True)
+                elif kind == "url":
+                    url_val = str(result_dict.get("url", "")).strip()
+                    if url_val:
+                        st.image(url_val, use_container_width=True)
+                        st.caption(url_val)
+                else:
+                    st.warning(f"Ảnh #{image_idx}: phản hồi không có dữ liệu ảnh.")
+                st.caption(f"#{image_idx}")
+            except Exception as render_ex:
+                st.warning(f"Ảnh #{image_idx}: không thể hiển thị ({render_ex}).")
+
+    def _render_live_error(image_idx: int, key_used: str, err_msg: str) -> None:
+        placeholder = live_placeholders.get(image_idx)
+        if placeholder is None:
+            return
+        with placeholder.container():
+            st.error(f"Ảnh #{image_idx} lỗi")
+            st.caption(f"{mask_api_key(key_used)}")
+            with st.expander("Chi tiết", expanded=False):
+                st.code(err_msg or "(không có chi tiết)")
 
     def _worker(image_idx: int, key_used: str) -> tuple[int, str, dict[str, Any] | None, str | None]:
         task_payload = dict(base_payload)
@@ -1994,6 +3334,7 @@ def run_payload_generation(
             if err is not None or result is None:
                 fail_count += 1
                 errors.append(f"Ảnh #{image_idx} ({mask_api_key(key_used)}): {err}")
+                _render_live_error(image_idx, key_used, err or "")
                 progress.progress(done_total / len(futures))
                 continue
 
@@ -2009,6 +3350,18 @@ def run_payload_generation(
                 show_inline_preview=False,
                 download_key_suffix=f"{workflow_name}_{image_idx}_{timestamp_slug()}",
             )
+            # Tìm path đã lưu từ recent_outputs (mục mới nhất khớp prompt).
+            saved_path_for_tile = ""
+            try:
+                for entry in st.session_state.get("recent_outputs", []):
+                    if isinstance(entry, dict) and str(entry.get("prompt", "")).startswith(
+                        f"[{workflow_name} #{image_idx}] "
+                    ):
+                        saved_path_for_tile = str(entry.get("local_path", ""))
+                        break
+            except Exception:
+                saved_path_for_tile = ""
+            _render_live_tile(image_idx, result, saved_path_for_tile)
             progress.progress(done_total / len(futures))
 
     if success_count > 0:
@@ -2020,6 +3373,48 @@ def run_payload_generation(
             st.caption(f"Thống kê mã lỗi: {status_note}")
         if hint:
             st.info(hint)
+
+        # Hành động cứu nhanh khi có lỗi timeout/rate limit.
+        joined_errors = "\n".join(str(item) for item in errors).lower()
+        timeout_present = ("timeout" in joined_errors) or ("timed out" in joined_errors)
+        rate_limit_present = ("rate limit" in joined_errors) or ("429" in joined_errors)
+        if timeout_present or rate_limit_present:
+            st.markdown("**Đề xuất khắc phục nhanh:**")
+            cur_timeout = int(st.session_state.get("api_request_timeout", DEFAULT_API_POST_TIMEOUT_SECONDS))
+            cur_count = int(st.session_state.get("studio_count", 1))
+            cur_workers = int(st.session_state.get("multi_api_max_parallel", 1))
+            colf1, colf2, colf3 = st.columns(3)
+            with colf1:
+                if timeout_present and st.button(
+                    f"⏱ Tăng timeout +120s (hiện {cur_timeout}s)",
+                    key=f"btn_bump_timeout_{timestamp_slug()}_{success_count}_{fail_count}",
+                    use_container_width=True,
+                ):
+                    st.session_state.api_request_timeout = min(MAX_API_TIMEOUT_SECONDS, cur_timeout + 120)
+                    st.toast(f"Timeout đã tăng lên {st.session_state.api_request_timeout}s.")
+                    st.rerun()
+            with colf2:
+                new_count = max(1, cur_count // 2) if cur_count > 1 else 1
+                if cur_count > 1 and st.button(
+                    f"🪄 Giảm số ảnh xuống {new_count}",
+                    key=f"btn_reduce_count_{timestamp_slug()}_{success_count}_{fail_count}",
+                    use_container_width=True,
+                ):
+                    st.session_state.studio_count = new_count
+                    st.session_state.gen_count = new_count
+                    st.toast(f"Đã chỉnh số ảnh / lượt = {new_count}.")
+                    st.rerun()
+            with colf3:
+                new_workers = max(1, cur_workers // 2) if cur_workers > 1 else 1
+                if rate_limit_present and cur_workers > 1 and st.button(
+                    f"🐢 Giảm luồng song song xuống {new_workers}",
+                    key=f"btn_reduce_workers_{timestamp_slug()}_{success_count}_{fail_count}",
+                    use_container_width=True,
+                ):
+                    st.session_state.multi_api_max_parallel = new_workers
+                    st.toast(f"Đã chỉnh luồng song song = {new_workers}.")
+                    st.rerun()
+
         with st.expander("Chi tiết lỗi batch", expanded=False):
             for item in errors[:20]:
                 st.code(item)
@@ -2262,28 +3657,6 @@ def extract_model_option_hints(info: dict[str, Any], target_key: str) -> list[st
     return unique_list(result)
 
 
-def build_scene_prompt(scene_name: str, subject: str) -> str:
-    template = SCENE_PRESETS.get(scene_name, {}).get("template", "{subject}")
-    return template.replace("{subject}", subject.strip() or "một ý tưởng sáng tạo")
-
-
-def optimize_prompt(base_prompt: str, style_name: str, quality_name: str, mood: str, lighting: str, camera: str) -> str:
-    parts = [base_prompt.strip()]
-    if mood.strip():
-        parts.append(mood.strip())
-    if lighting.strip():
-        parts.append(lighting.strip())
-    if camera.strip():
-        parts.append(camera.strip())
-    style_suffix = STYLE_PRESETS.get(style_name, {}).get("prompt_suffix", "")
-    quality_suffix = QUALITY_PROFILES.get(quality_name, {}).get("prompt_suffix", "")
-    if style_suffix:
-        parts.append(str(style_suffix))
-    if quality_suffix:
-        parts.append(str(quality_suffix))
-    return ", ".join(unique_list(parts))
-
-
 def apply_quality_profile_to_state() -> None:
     profile = QUALITY_PROFILES.get(st.session_state.gen_quality_profile, {})
     st.session_state.gen_steps = int(profile.get("steps", st.session_state.gen_steps))
@@ -2291,20 +3664,6 @@ def apply_quality_profile_to_state() -> None:
     st.session_state.gen_cfg_scale = float(profile.get("cfg_scale", st.session_state.gen_cfg_scale))
     if not st.session_state.gen_quality_override:
         st.session_state.gen_quality_override = str(profile.get("quality", ""))
-
-
-def apply_workflow_preset(name: str) -> None:
-    preset = WORKFLOW_PRESETS.get(name)
-    if not preset:
-        return
-    st.session_state.quick_scene = preset["scene"]
-    st.session_state.quick_style = preset["style"]
-    st.session_state.quick_quality_profile = preset["quality_profile"]
-    st.session_state.quick_size_preset = preset["size_preset"]
-    st.session_state.quick_aspect_ratio = preset["ratio"]
-    st.session_state.quick_response_format = preset["response_format"]
-    st.session_state.quick_count = int(preset["n"])
-    st.session_state.gen_extra_json = json.dumps(preset.get("extra", {}), ensure_ascii=False)
 
 
 def render_css() -> None:
@@ -2322,7 +3681,7 @@ def render_css() -> None:
         f"""
         <style>
           /* ============================================================
-             9Router Studio Pro - Desktop AI Image Generator
+             Wahu Image Studio - Desktop AI Image Generator
              Dark futuristic, purple-cyan, glassmorphism, neon glow.
              ============================================================ */
           :root {{
@@ -3390,12 +4749,182 @@ def render_css() -> None:
             font-size: .76rem;
           }}
 
+          /* ----- Scrollbars (dark sleek) ----- */
+          *::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+          *::-webkit-scrollbar-track {{
+            background: rgba(7, 10, 23, 0.4);
+            border-radius: 8px;
+          }}
+          *::-webkit-scrollbar-thumb {{
+            background: linear-gradient(180deg, rgba(123, 97, 255, .55), rgba(56, 189, 248, .35));
+            border-radius: 8px;
+            border: 2px solid rgba(7, 10, 23, 0.4);
+          }}
+          *::-webkit-scrollbar-thumb:hover {{
+            background: linear-gradient(180deg, rgba(123, 97, 255, .85), rgba(56, 189, 248, .65));
+          }}
+          * {{
+            scrollbar-color: rgba(123, 97, 255, .55) rgba(7, 10, 23, 0.4);
+            scrollbar-width: thin;
+          }}
+
+          /* ----- Subtle hero shine sweep ----- */
+          @keyframes nrHeroShine {{
+            0%   {{ transform: translateX(-30%); opacity: 0; }}
+            50%  {{ opacity: .9; }}
+            100% {{ transform: translateX(130%); opacity: 0; }}
+          }}
+          .hero::before {{
+            content: "";
+            position: absolute;
+            top: -40%;
+            left: 0;
+            width: 28%;
+            height: 180%;
+            background: linear-gradient(115deg, transparent 0%, rgba(255,255,255,.05) 45%, rgba(255,255,255,.10) 50%, rgba(255,255,255,.05) 55%, transparent 100%);
+            transform: translateX(-30%);
+            pointer-events: none;
+            animation: nrHeroShine 7.5s ease-in-out infinite;
+          }}
+
+          /* ----- Sidebar status footer ----- */
+          .nr-sidebar-status {{
+            margin-top: .9rem;
+            padding: .6rem .65rem;
+            border-radius: 12px;
+            border: 1px solid var(--nr-line);
+            background:
+              radial-gradient(220px 100px at 0% 0%, rgba(123,97,255,.10), transparent 70%),
+              linear-gradient(160deg, rgba(18,26,43,.8) 0%, rgba(10,15,30,.65) 100%);
+            box-shadow: var(--nr-shadow-sm);
+          }}
+          .nr-sidebar-status .nr-st-row {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .35rem;
+            font-size: .78rem;
+            color: var(--nr-text-soft);
+            padding: .12rem 0;
+          }}
+          .nr-sidebar-status .nr-st-row b {{
+            color: var(--nr-text);
+            font-weight: 700;
+          }}
+          .nr-sidebar-status .nr-st-dot {{
+            display: inline-block;
+            width: 6px; height: 6px; border-radius: 50%;
+            box-shadow: 0 0 10px currentColor;
+            margin-right: .35rem;
+          }}
+          .nr-sidebar-status .nr-st-ok    {{ color: var(--nr-success); }}
+          .nr-sidebar-status .nr-st-warn  {{ color: var(--nr-warn); }}
+          .nr-sidebar-status .nr-st-err   {{ color: var(--nr-danger); }}
+
+          /* ----- Quick action chips on home page ----- */
+          .nr-home-actions {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: .55rem;
+            margin: .25rem 0 .55rem;
+          }}
+
+          /* ----- Dashboard tile (grouped metrics) ----- */
+          .nr-dash-tile {{
+            border: 1px solid var(--nr-line);
+            border-radius: 14px;
+            padding: .7rem .85rem;
+            background:
+              radial-gradient(260px 130px at 0% 0%, rgba(123,97,255,.10), transparent 70%),
+              linear-gradient(155deg, rgba(18,26,43,.7) 0%, rgba(10,15,30,.55) 100%);
+            box-shadow: var(--nr-shadow-sm);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            transition: border-color .18s ease, transform .18s ease;
+          }}
+          .nr-dash-tile:hover {{
+            border-color: rgba(123,97,255,.5);
+            transform: translateY(-1px);
+          }}
+          .nr-dash-tile .nr-dash-label {{
+            color: var(--nr-text-mute);
+            font-size: .72rem;
+            text-transform: uppercase;
+            letter-spacing: .8px;
+            font-weight: 700;
+          }}
+          .nr-dash-tile .nr-dash-value {{
+            margin-top: .15rem;
+            font-size: 1.2rem;
+            font-weight: 800;
+            color: var(--nr-text);
+          }}
+          .nr-dash-tile .nr-dash-sub {{
+            margin-top: .15rem;
+            font-size: .76rem;
+            color: var(--nr-text-soft);
+          }}
+          .nr-dash-bar {{
+            margin-top: .42rem;
+            height: 6px;
+            border-radius: 999px;
+            background: rgba(255,255,255,.05);
+            overflow: hidden;
+          }}
+          .nr-dash-bar > span {{
+            display: block;
+            height: 100%;
+            background: linear-gradient(90deg, #7B61FF 0%, #38BDF8 100%);
+            box-shadow: 0 0 10px rgba(123,97,255,.5);
+          }}
+
+          /* ----- Spinner ----- */
+          [data-testid="stSpinner"] > div > div {{
+            border-top-color: var(--nr-primary) !important;
+            border-right-color: var(--nr-primary-2) !important;
+          }}
+
+          /* ----- Toast / Snackbar polish ----- */
+          [data-testid="stToast"] {{
+            border-radius: 12px !important;
+            border: 1px solid var(--nr-line-2) !important;
+            background: linear-gradient(135deg, rgba(18,26,43,.95), rgba(11,16,32,.95)) !important;
+            box-shadow: var(--nr-shadow-md), var(--nr-glow-purple) !important;
+          }}
+
+          /* ----- Code blocks ----- */
+          .stCodeBlock {{
+            border-radius: 12px !important;
+            border: 1px solid var(--nr-line) !important;
+            box-shadow: var(--nr-shadow-sm) !important;
+          }}
+
+          /* ----- Slider polish ----- */
+          .stSlider [data-baseweb="slider"] [role="slider"] {{
+            background: linear-gradient(135deg, #7B61FF, #38BDF8) !important;
+            border: 0 !important;
+            box-shadow: 0 0 14px rgba(123,97,255,.5) !important;
+          }}
+
+          /* ----- DataFrame polish ----- */
+          [data-testid="stDataFrame"] {{
+            border-radius: 12px !important;
+            border: 1px solid var(--nr-line) !important;
+            overflow: hidden;
+            box-shadow: var(--nr-shadow-sm) !important;
+          }}
+
           /* ----- Responsive ----- */
           @media (max-width: 1180px) {{
             section[data-testid="stSidebar"] {{
               width: 220px !important;
               min-width: 220px !important;
             }}
+          }}
+          @media (max-width: 720px) {{
+            .hero h1 {{ font-size: 1.1rem !important; }}
+            .hero p {{ font-size: .76rem !important; }}
+            .hero-chip {{ font-size: .7rem; padding: .18rem .5rem; }}
           }}
         </style>
         """,
@@ -3409,20 +4938,41 @@ def render_hero() -> None:
     api_state_label = "API sẵn sàng" if has_api else "Chưa cấu hình API"
     api_state_dot = "🟢" if has_api else "🟡"
     model_label = str(st.session_state.get("manual_model", DEFAULT_MODEL))
-    today_label = datetime.now().strftime("%d/%m/%Y")
+    today_label = datetime.now().strftime("%d/%m/%Y • %H:%M")
+
+    key_count = len(
+        parse_api_keys_pool(
+            st.session_state.get("api_keys_pool_text", ""),
+            st.session_state.get("api_key", ""),
+        )
+    )
+    today_slug = date_slug()
+    try:
+        history_today = sum(
+            1
+            for item in load_history(limit=600)
+            if str(item.get("time", "")).startswith(today_slug)
+        )
+    except Exception:
+        history_today = 0
+
+    chips = [f"{api_state_dot} {html.escape(api_state_label)}"]
+    short_model = model_label.split("/")[-1] if "/" in model_label else model_label
+    chips.append(f"🧠 {html.escape(short_model)}")
+    chips.append(f"🔑 {key_count} key" + (" pool" if key_count > 1 else ""))
+    chips.append(f"⚡ {history_today} ảnh hôm nay")
+    chips.append(f"📅 {html.escape(today_label)}")
+
+    chip_html = "".join(f'<span class="hero-chip">{c}</span>' for c in chips)
     st.markdown(
         f"""
         <div class="hero">
           <div class="hero-row">
             <div class="hero-title">
-              <h1>9Router Image Studio</h1>
-              <p>Tạo / sửa ảnh và train LoRA trong một giao diện gọn.</p>
+              <h1>Wahu Image Studio</h1>
+              <p>Tạo / sửa ảnh và train LoRA — gọn, nhanh, đẹp.</p>
             </div>
-            <div class="hero-meta">
-              <span class="hero-chip">{api_state_dot} {html.escape(api_state_label)}</span>
-              <span class="hero-chip">🧠 {html.escape(model_label)}</span>
-              <span class="hero-chip">📅 {html.escape(today_label)}</span>
-            </div>
+            <div class="hero-meta">{chip_html}</div>
           </div>
         </div>
         """,
@@ -3450,44 +5000,28 @@ def init_state() -> None:
     st.session_state.image_retry_backoff = DEFAULT_IMAGE_RETRY_BACKOFF_SECONDS
     st.session_state.page_name = PAGE_DRAW
     st.session_state.page_name_selector = PAGE_DRAW
-    st.session_state.force_page_selector_sync = False
     st.session_state.ui_compact_mode = True
-    st.session_state.ui_debug_mode = False
-    st.session_state.enable_paste_component = DEFAULT_ENABLE_EXPERIMENTAL_PASTE_COMPONENT
 
     st.session_state.models = []
     st.session_state.model_nonce = 0
     st.session_state.manual_model = DEFAULT_MODEL
-
-    st.session_state.gen_workflow_preset = DEFAULT_WORKFLOW_PRESET
-    st.session_state.quick_scene = DEFAULT_SCENE_PRESET
     st.session_state.quick_subject = ""
     st.session_state.quick_style = "Không áp phong cách"
     st.session_state.quick_quality_profile = "Cân bằng"
-    st.session_state.quick_size_preset = "Vu\u00f4ng 1024"
+    st.session_state.quick_size_preset = "Vuông 1024"
     st.session_state.quick_aspect_ratio = "1:1"
     st.session_state.quick_response_format = "binary"
     st.session_state.quick_count = 1
-    st.session_state.quick_mood = ""
-    st.session_state.quick_lighting = ""
-    st.session_state.quick_camera = ""
-    st.session_state.quick_use_optimizer = False
-    st.session_state.quick_auto_negative = False
-    st.session_state.quick_prompt_preview = ""
-    st.session_state.create_use_reference = False
-    st.session_state.create_reference_mode = "1 ảnh"
-    st.session_state.create_quality_tier = "Fast"
-    st.session_state.create_modifiers = []
-    st.session_state.create_extra_json = "{}"
-    st.session_state.create_count_ui = 1
-    st.session_state.create_response_format_ui = "binary"
-    st.session_state.create_ref_preserve_mode = True
+    st.session_state.quick_simple_transparent_bg = False
+    st.session_state.quick_universal_transparent_bg = False
+    st.session_state.quick_remix_transparent_bg = False
+    st.session_state.quick_edit_transparent_bg = False
 
     st.session_state.gen_prompt = ""
     st.session_state.gen_negative_prompt = ""
     st.session_state.gen_style = "Không áp phong cách"
     st.session_state.gen_quality_profile = "Cân bằng"
-    st.session_state.gen_size_preset = "Vu\u00f4ng 1024"
+    st.session_state.gen_size_preset = "Vuông 1024"
     st.session_state.gen_custom_size = ""
     st.session_state.gen_aspect_ratio = "1:1"
     st.session_state.gen_count = 1
@@ -3495,6 +5029,7 @@ def init_state() -> None:
     st.session_state.gen_output_file = f"outputs/out_{timestamp_slug()}.png"
     st.session_state.gen_quality_override = ""
     st.session_state.gen_style_override = ""
+    st.session_state.gen_transparent_background = False
     st.session_state.gen_background = ""
     st.session_state.gen_output_format = ""
     st.session_state.gen_image_detail = ""
@@ -3506,8 +5041,6 @@ def init_state() -> None:
     st.session_state.gen_clip_skip = 1
     st.session_state.gen_seed = ""
     st.session_state.gen_extra_json = "{}"
-
-    st.session_state.draw_active_flow = WORKFLOW_TABS[0]
     st.session_state.studio_top_model = DEFAULT_MODEL
     st.session_state.auto_save_outputs = True
     st.session_state.recent_outputs = []
@@ -3557,6 +5090,7 @@ def ensure_state_defaults() -> None:
     Called on every run so old browser sessions that were initialized
     by an earlier version of the code don't crash with AttributeError.
     """
+    load_env_file(Path(st.session_state.get("env_file", DEFAULT_ENV_FILE)))
     defaults: dict[str, Any] = {
         "env_file": DEFAULT_ENV_FILE,
         "base_url": os.getenv("NINEROUTER_URL", ""),
@@ -3572,10 +5106,7 @@ def ensure_state_defaults() -> None:
         "image_retry_backoff": DEFAULT_IMAGE_RETRY_BACKOFF_SECONDS,
         "page_name": PAGE_DRAW,
         "page_name_selector": PAGE_DRAW,
-        "force_page_selector_sync": False,
         "ui_compact_mode": True,
-        "ui_debug_mode": False,
-        "enable_paste_component": DEFAULT_ENABLE_EXPERIMENTAL_PASTE_COMPONENT,
         "models": [],
         "model_nonce": 0,
         "manual_model": DEFAULT_MODEL,
@@ -3583,44 +5114,32 @@ def ensure_state_defaults() -> None:
         "studio_response_format": "binary",
         "studio_count": 1,
         "studio_output_prefix": "outputs/result",
-        "draw_active_flow": WORKFLOW_TABS[0],
         "auto_save_outputs": True,
         "recent_outputs": [],
         "recent_view_output_id": "",
-        "gen_workflow_preset": DEFAULT_WORKFLOW_PRESET,
-        "quick_scene": DEFAULT_SCENE_PRESET,
         "quick_subject": "",
         "quick_style": "Không áp phong cách",
         "quick_quality_profile": "Cân bằng",
-        "quick_size_preset": "Vu\u00f4ng 1024",
+        "quick_size_preset": "Vuông 1024",
         "quick_aspect_ratio": "1:1",
         "quick_response_format": "binary",
         "quick_count": 1,
-        "quick_mood": "",
-        "quick_lighting": "",
-        "quick_camera": "",
-        "quick_use_optimizer": False,
-        "quick_auto_negative": False,
-        "quick_prompt_preview": "",
-        "create_use_reference": False,
-        "create_reference_mode": "1 ảnh",
-        "create_quality_tier": "Fast",
-        "create_modifiers": [],
-        "create_extra_json": "{}",
-        "create_count_ui": 1,
-        "create_response_format_ui": "binary",
-        "create_ref_preserve_mode": True,
+        "quick_simple_transparent_bg": False,
+        "quick_universal_transparent_bg": False,
+        "quick_remix_transparent_bg": False,
+        "quick_edit_transparent_bg": False,
         "gen_prompt": "",
         "gen_negative_prompt": "",
         "gen_style": "Không áp phong cách",
         "gen_quality_profile": "Cân bằng",
-        "gen_size_preset": "Vu\u00f4ng 1024",
+        "gen_size_preset": "Vuông 1024",
         "gen_custom_size": "",
         "gen_aspect_ratio": "1:1",
         "gen_count": 1,
         "gen_response_format": "binary",
         "gen_quality_override": "",
         "gen_style_override": "",
+        "gen_transparent_background": False,
         "gen_background": "",
         "gen_output_format": "",
         "gen_image_detail": "",
@@ -3671,6 +5190,34 @@ def ensure_state_defaults() -> None:
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    env_base_url = os.getenv("NINEROUTER_URL", "").strip()
+    env_api_key = os.getenv("NINEROUTER_KEY", "").strip()
+    env_key_pool = os.getenv("NINEROUTER_KEYS", "").strip()
+    current_base_url = str(st.session_state.get("base_url", "")).strip()
+    if env_base_url and (
+        not current_base_url
+        or current_base_url.startswith("http://localhost:20128")
+        or (is_cpab_base_url(env_base_url) and not is_cpab_base_url(current_base_url))
+    ):
+        st.session_state.base_url = env_base_url
+        st.session_state.config_base_url = env_base_url
+    if env_api_key and st.session_state.get("api_key") != env_api_key:
+        st.session_state.api_key = env_api_key
+        st.session_state.config_api_key = env_api_key
+    if env_key_pool and st.session_state.get("api_keys_pool_text") != env_key_pool:
+        st.session_state.api_keys_pool_text = env_key_pool
+        st.session_state.quick_api_keys_pool_text = env_key_pool
+        st.session_state.studio_api_keys_pool_text = env_key_pool
+        st.session_state.config_api_keys_pool_text = env_key_pool
+
+    if is_cpab_base_url(str(st.session_state.get("base_url", ""))):
+        allowed_chat = {item.lower() for item in CPAB_CHAT_MODELS}
+        for model_key in ("manual_model", "studio_top_model"):
+            if str(st.session_state.get(model_key, "")).strip().lower() not in allowed_chat:
+                st.session_state[model_key] = DEFAULT_MODEL
+        st.session_state.models = CPAB_CHAT_MODELS.copy()
+
     if not st.session_state.quick_api_keys_pool_text:
         st.session_state.quick_api_keys_pool_text = st.session_state.api_keys_pool_text
     if not st.session_state.studio_api_keys_pool_text:
@@ -3679,41 +5226,130 @@ def ensure_state_defaults() -> None:
         st.session_state.config_api_keys_pool_text = st.session_state.api_keys_pool_text
 
 
-def available_page_options() -> list[str]:
-    options = list(PAGE_OPTIONS_BASIC)
-    if bool(st.session_state.get("ui_debug_mode", False)):
-        options.extend(PAGE_OPTIONS_ADVANCED)
-    elif PAGE_CONFIG not in options:
-        options.append(PAGE_CONFIG)
-    return unique_list(options)
-
-
 def navigate_to_page(page_name: str) -> None:
     st.session_state.page_name = page_name
-    st.session_state.force_page_selector_sync = True
     st.rerun()
+
+
+# ===== Flow / Provider switcher (được thêm tự động) =====
+FLOW_PROXY_PORT = 8790
+FLOW_PROXY_URL = "http://localhost:8790"
+FLOW_PROXY_BAT = r"D:\TOOL\TOOL Anh\run_flow_proxy.bat"
+
+PROVIDERS = {
+    "flow": {
+        "label": "\U0001F30A Flow (Veo \u00B7 Nano Banana)",
+        "base_url": FLOW_PROXY_URL,
+        "default_model": "NARWHAL",
+        "desc": "Google Labs Flow qua Brave (proxy n\u1ED9i b\u1ED9 c\u1ED5ng 8790).",
+    },
+    "gemini": {
+        "label": "\U0001F537 Gemini (ch\u00EDnh th\u1EE9c)",
+        "base_url": "http://localhost:8788",
+        "default_model": "gemini-2.5-flash-image",
+        "desc": "Gemini API ch\u00EDnh th\u1EE9c qua proxy (c\u1ED5ng 8788).",
+    },
+    "9router": {
+        "label": "\U0001F7E3 9Router / OpenAI",
+        "base_url": os.getenv("NINEROUTER_URL", "http://localhost:20128") or "http://localhost:20128",
+        "default_model": "gpt-image-2",
+        "desc": "Ngu\u1ED3n OpenAI-compatible m\u1EB7c \u0111\u1ECBnh.",
+    },
+}
+
+
+def detect_provider(base_url: str) -> str:
+    u = str(base_url or "").strip().lower()
+    if "8790" in u:
+        return "flow"
+    if "8788" in u:
+        return "gemini"
+    return "9router"
+
+
+def flow_proxy_running() -> bool:
+    try:
+        with request.urlopen(f"{FLOW_PROXY_URL}/api/health", timeout=1) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def start_flow_proxy() -> bool:
+    if flow_proxy_running():
+        return True
+    if not os.path.exists(FLOW_PROXY_BAT):
+        return False
+    try:
+        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        subprocess.Popen([FLOW_PROXY_BAT], creationflags=flags)
+        return True
+    except Exception:
+        return False
+
+
+def connect_provider(key: str) -> tuple[bool, str]:
+    cfg = PROVIDERS.get(key)
+    if not cfg:
+        return False, "Provider kh\u00F4ng h\u1EE3p l\u1EC7"
+    st.session_state.base_url = cfg["base_url"]
+    st.session_state.config_base_url = cfg["base_url"]
+    try:
+        ok, msg = load_models_into_state(cfg["base_url"], st.session_state.get("api_key", ""))
+    except Exception as ex:
+        return False, str(ex)
+    models = [m for m in st.session_state.get("models", []) if isinstance(m, str)]
+    dm = cfg.get("default_model")
+    if dm and dm in models:
+        st.session_state.manual_model = dm
+    elif models:
+        st.session_state.manual_model = models[0]
+    elif dm:
+        st.session_state.manual_model = dm
+    return ok, msg
+
+
+def _on_provider_change() -> None:
+    key = st.session_state.get("provider_choice")
+    cfg = PROVIDERS.get(key)
+    if not cfg:
+        return
+    st.session_state.base_url = cfg["base_url"]
+    st.session_state.config_base_url = cfg["base_url"]
+    dm = cfg.get("default_model")
+    if dm:
+        st.session_state.manual_model = dm
+    # Dong bo model ve art theo nguon
+    if key == "flow":
+        st.session_state["tutienco_art_model"] = "NARWHAL"
+    elif key == "gemini":
+        st.session_state["tutienco_art_model"] = "gemini-2.5-flash-image"
+    else:
+        st.session_state["tutienco_art_model"] = "cx/gpt-5.4-image"
+    # Thu nap model (khong chan neu nguon chua san sang)
+    try:
+        load_models_into_state(cfg["base_url"], st.session_state.get("api_key", ""))
+    except Exception:
+        pass
 
 
 def sidebar_settings() -> tuple[str, str]:
     with st.sidebar:
-        page_options = available_page_options()
+        page_options = list(PAGE_OPTIONS)
         if st.session_state.page_name not in page_options:
             st.session_state.page_name = PAGE_DRAW
-            st.session_state.force_page_selector_sync = True
-        if bool(st.session_state.get("force_page_selector_sync", False)) or st.session_state.get("page_name_selector") not in page_options:
+        if st.session_state.get("page_name_selector") not in page_options:
             st.session_state.page_name_selector = st.session_state.page_name
-            st.session_state.force_page_selector_sync = False
 
         nav_label_map = {
             PAGE_DRAW: "🎨  Tạo ảnh",
             PAGE_HOME: "🏠  Tổng quan",
             PAGE_GALLERY: "🖼️  Thư viện",
-            PAGE_PRESET: "✨  Mẫu prompt",
             PAGE_TRAIN: "🧬  Train LoRA",
             PAGE_MODEL: "🧠  Model",
             PAGE_CONFIG: "⚙️  Cài đặt",
         }
-        ordered_pages = [PAGE_DRAW, PAGE_HOME, PAGE_GALLERY, PAGE_PRESET, PAGE_TRAIN, PAGE_MODEL, PAGE_CONFIG]
+        ordered_pages = [PAGE_DRAW, PAGE_HOME, PAGE_GALLERY, PAGE_TRAIN, PAGE_MODEL, PAGE_CONFIG]
         menu_options = [item for item in ordered_pages if item in page_options]
         if st.session_state.get("page_name_selector") not in menu_options:
             st.session_state.page_name_selector = (
@@ -3723,9 +5359,9 @@ def sidebar_settings() -> tuple[str, str]:
         st.markdown(
             """
             <div class="nr-brand">
-              <div class="nr-brand-logo">9R</div>
+              <div class="nr-brand-logo">W</div>
               <div class="nr-brand-text">
-                <div class="nr-brand-title">9Router Studio</div>
+                <div class="nr-brand-title">Wahu Studio</div>
                 <div class="nr-brand-sub">AI Image Generator</div>
               </div>
             </div>
@@ -3744,22 +5380,18 @@ def sidebar_settings() -> tuple[str, str]:
             st.session_state.page_name = selected_page
 
         st.markdown("<div class='nr-sidebar-divider'></div>", unsafe_allow_html=True)
-        opt_l, opt_r = st.columns(2, gap="small")
-        with opt_l:
-            st.toggle("Gọn", key="ui_compact_mode", help="Chế độ compact giảm khoảng cách giữa các thành phần.")
-        with opt_r:
-            st.toggle("Nâng cao", key="ui_debug_mode", help="Mở thêm các trang nâng cao và chế độ debug.")
-        if bool(st.session_state.get("ui_debug_mode", False)):
-            st.toggle(
-                "Bật dán ảnh thử nghiệm",
-                key="enable_paste_component",
-                help="Chỉ bật khi cần test component dán ảnh.",
-            )
-        else:
-            st.session_state.enable_paste_component = False
+        st.toggle(
+            "Giao diện gọn",
+            key="ui_compact_mode",
+            help="Bật chế độ compact để giảm khoảng cách giữa các thành phần.",
+        )
 
         configured = "🟢 Đã cấu hình" if str(st.session_state.base_url).strip() else "🟡 Chưa cấu hình"
         st.caption(f"API: {configured}")
+        current_model = str(st.session_state.get("manual_model", DEFAULT_MODEL)).strip()
+        if current_model:
+            short_model = current_model.split("/")[-1] if "/" in current_model else current_model
+            st.caption(f"Model: `{short_model}`")
 
         with st.expander("Cấu hình API nhanh", expanded=False):
             st.text_input("Tệp env", key="env_file")
@@ -3795,6 +5427,107 @@ def sidebar_settings() -> tuple[str, str]:
             st.caption(f"Tổng số key: {key_count}")
             if st.button("Mở Cài đặt đầy đủ", use_container_width=True, key="btn_sidebar_open_config_api"):
                 navigate_to_page(PAGE_CONFIG)
+
+        # ----- Provider switcher (Ngu\u1ED3n \u1EA3nh AI) -----
+        _cur_prov = detect_provider(st.session_state.get("base_url", ""))
+        _prov_keys = list(PROVIDERS.keys())
+        with st.expander(f"\U0001F50C Ngu\u1ED3n \u1EA3nh AI \u00B7 {PROVIDERS[_cur_prov]['label']}", expanded=False):
+            _sel = st.radio(
+                "Ch\u1ECDn ngu\u1ED3n \u1EA3nh",
+                options=_prov_keys,
+                index=_prov_keys.index(_cur_prov),
+                format_func=lambda k: PROVIDERS[k]["label"],
+                key="provider_choice",
+                on_change=_on_provider_change,
+                label_visibility="collapsed",
+            )
+            st.caption(PROVIDERS[_sel]["desc"])
+
+            if _sel == "flow":
+                if flow_proxy_running():
+                    st.markdown("<div style='color:#16a34a;font-weight:600;margin:2px 0'>\U0001F7E2 Flow proxy \u0111ang ch\u1EA1y</div>", unsafe_allow_html=True)
+                    _b1, _b2 = st.columns(2)
+                    if _b1.button("D\u00F9ng Flow", use_container_width=True, key="btn_prov_use_flow"):
+                        _ok, _msg = connect_provider("flow")
+                        (st.success if _ok else st.error)(_msg)
+                    if _b2.button("\u21BB N\u1EA1p model", use_container_width=True, key="btn_prov_flow_reload"):
+                        _ok, _msg = load_models_into_state(FLOW_PROXY_URL, "")
+                        (st.success if _ok else st.error)(_msg)
+                else:
+                    st.markdown("<div style='color:#dc2626;font-weight:600;margin:2px 0'>\U0001F534 Flow proxy ch\u01B0a ch\u1EA1y</div>", unsafe_allow_html=True)
+                    if st.button("\U0001F680 B\u1EADt Flow & m\u1EDF Brave", type="primary", use_container_width=True, key="btn_prov_start_flow"):
+                        if start_flow_proxy():
+                            st.session_state.base_url = FLOW_PROXY_URL
+                            st.session_state.manual_model = "NARWHAL"
+                            st.info("\u0110ang b\u1EADt Flow + m\u1EDF Brave (~20s). Khi proxy s\u1EB5n s\u00E0ng b\u1EA5m 'D\u00F9ng Flow' r\u1ED3i '\u21BB N\u1EA1p model'.")
+                        else:
+                            st.error("Kh\u00F4ng b\u1EADt \u0111\u01B0\u1EE3c proxy (ki\u1EC3m tra run_flow_proxy.bat).")
+            else:
+                st.caption(f"Base URL: `{PROVIDERS[_sel]['base_url']}`")
+                if st.button("K\u1EBFt n\u1ED1i", type="primary", use_container_width=True, key=f"btn_prov_connect_{_sel}"):
+                    _ok, _msg = connect_provider(_sel)
+                    (st.success if _ok else st.error)(_msg)
+
+            _models = [m for m in st.session_state.get("models", []) if isinstance(m, str)]
+            if _models:
+                st.markdown(
+                    "<div style='margin-top:6px;font-size:0.82rem;color:#475569'>\u2705 <b>"
+                    + str(len(_models)) + "</b> model: " + ", ".join(_models[:10]) + "</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("Ch\u01B0a n\u1EA1p model \u2014 b\u1EA5m K\u1EBFt n\u1ED1i / N\u1EA1p model.")
+
+        # ----- Live status footer -----
+        try:
+            today_slug = date_slug()
+            today_count = sum(
+                1
+                for item in load_history(limit=600)
+                if str(item.get("time", "")).startswith(today_slug)
+            )
+        except Exception:
+            today_count = 0
+        try:
+            outputs_dir = Path("outputs")
+            outputs_size = 0
+            if outputs_dir.exists():
+                for p in outputs_dir.rglob("*"):
+                    if p.is_file():
+                        try:
+                            outputs_size += p.stat().st_size
+                        except Exception:
+                            continue
+            if outputs_size >= 1024 ** 3:
+                outputs_label = f"{outputs_size / (1024 ** 3):.2f} GB"
+            elif outputs_size >= 1024 ** 2:
+                outputs_label = f"{outputs_size / (1024 ** 2):.0f} MB"
+            elif outputs_size >= 1024:
+                outputs_label = f"{outputs_size / 1024:.0f} KB"
+            else:
+                outputs_label = f"{outputs_size} B"
+        except Exception:
+            outputs_label = "—"
+
+        api_pool_text = st.session_state.get("api_keys_pool_text", "")
+        pool_count = len(parse_api_keys_pool(api_pool_text, st.session_state.get("api_key", "")))
+        api_dot_class = "nr-st-ok" if str(st.session_state.base_url).strip() else "nr-st-warn"
+        api_dot_label = "Online" if str(st.session_state.base_url).strip() else "Chưa nối"
+        st.markdown(
+            f"""
+            <div class="nr-sidebar-status">
+              <div class="nr-st-row">
+                <span><span class="nr-st-dot {api_dot_class}"></span>API</span>
+                <b>{html.escape(api_dot_label)}</b>
+              </div>
+              <div class="nr-st-row"><span>🔑 Key pool</span><b>{pool_count}</b></div>
+              <div class="nr-st-row"><span>⚡ Ảnh hôm nay</span><b>{today_count}</b></div>
+              <div class="nr-st-row"><span>💽 Outputs</span><b>{outputs_label}</b></div>
+              <div class="nr-st-row"><span>🕒</span><b>{datetime.now().strftime("%H:%M")}</b></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     return st.session_state.page_name, st.session_state.base_url
 
@@ -3897,7 +5630,7 @@ def pill_multi_select(label: str, options: list[str], key: str, default: list[st
 
 
 def resolve_size() -> str:
-    if st.session_state.gen_size_preset == "T\u00f9y ch\u1ec9nh":
+    if st.session_state.gen_size_preset == "Tùy chỉnh":
         return st.session_state.gen_custom_size.strip()
     return SIZE_PRESETS.get(st.session_state.gen_size_preset, "").strip()
 
@@ -3952,6 +5685,7 @@ def build_payload(model: str, prompt: str, include_advanced: bool, response_form
 
     extra = parse_json_object(st.session_state.gen_extra_json)
     payload.update(extra)
+    apply_transparent_background_request(payload, bool(st.session_state.get("gen_transparent_background", False)))
     return payload
 
 
@@ -4032,11 +5766,32 @@ def render_recent_outputs_strip() -> None:
             else:
                 st.markdown("<div class='panel-card'>Không có preview</div>", unsafe_allow_html=True)
 
+            alpha_label = transparency_check_label(
+                entry.get("transparent_check"),
+                requested=bool(entry.get("transparent_requested")),
+            )
+            if alpha_label:
+                st.caption(alpha_label)
+
             stamp = str(entry.get("time", ""))[-8:]
             model_name = str(entry.get("model", ""))
             st.caption(f"{model_name} • {stamp}")
-            if st.button("🔍 Phóng to", key=f"btn_recent_view_{widget_id}", use_container_width=True):
-                st.session_state.recent_view_output_id = entry_id
+            view_col, open_col = st.columns(2)
+            with view_col:
+                if st.button("🔍 Phóng to", key=f"btn_recent_view_{widget_id}", use_container_width=True):
+                    st.session_state.recent_view_output_id = entry_id
+            with open_col:
+                if local_path and Path(local_path).exists():
+                    if st.button("📂 Mở", key=f"btn_recent_open_{widget_id}", use_container_width=True, help="Mở thư mục chứa ảnh"):
+                        try:
+                            folder = Path(local_path).parent
+                            if sys.platform.startswith("win"):
+                                os.startfile(str(folder))  # type: ignore[attr-defined]
+                            else:
+                                subprocess.Popen(["xdg-open", str(folder)])
+                            st.toast(f"Đã mở: {folder}")
+                        except Exception as ex:
+                            st.warning(f"Không mở được: {ex}")
 
     view_id = str(st.session_state.get("recent_view_output_id", "")).strip()
     if not view_id:
@@ -4056,6 +5811,12 @@ def render_recent_outputs_strip() -> None:
             st.image(image_bytes, use_container_width=True)
         elif url:
             st.image(url, use_container_width=True)
+        alpha_label = transparency_check_label(
+            selected.get("transparent_check"),
+            requested=bool(selected.get("transparent_requested")),
+        )
+        if alpha_label:
+            st.caption(alpha_label)
         prompt_text = str(selected.get("prompt", "")).strip()
         if prompt_text:
             st.code(prompt_text)
@@ -4082,21 +5843,35 @@ def render_generate_result(
 
     if result["kind"] in {"binary", "b64_json"}:
         image_bytes: bytes = result["image_bytes"]
+        transparent_check = result.get("transparent_check")
+        if not isinstance(transparent_check, dict):
+            transparent_check = inspect_image_transparency(image_bytes)
+        transparent_requested = bool(result.get("transparent_requested"))
         saved_path = ""
+        raw_chroma_path = ""
         if bool(st.session_state.get("auto_save_outputs", True)):
             final_file = output_file
             if Path(final_file).suffix == "":
                 final_file += infer_ext(result.get("content_type", ""))
             saved = save_image(image_bytes, final_file)
             saved_path = str(saved)
+            raw_chroma_bytes = result.get("raw_chroma_image_bytes")
+            if isinstance(raw_chroma_bytes, bytes) and raw_chroma_bytes:
+                raw_saved = save_image(raw_chroma_bytes, build_raw_chroma_output_path(final_file))
+                raw_chroma_path = str(raw_saved)
             if show_inline_preview:
                 st.success(f"Đã lưu ảnh: {saved}")
+                if raw_chroma_path:
+                    st.caption(f"Đã lưu bản gốc nền chroma: {raw_chroma_path}")
             history["local_path"] = saved_path
+            if raw_chroma_path:
+                history["raw_chroma_path"] = raw_chroma_path
         elif show_inline_preview:
             st.info("Ảnh chưa lưu vào máy (đang tắt lưu tự động).")
 
         if show_inline_preview:
             st.image(image_bytes, caption="Ảnh vừa tạo (thumbnail)", width=260)
+            render_transparency_check(transparent_check, requested=transparent_requested)
             with st.expander("Xem ảnh lớn", expanded=False):
                 st.image(image_bytes, use_container_width=True)
 
@@ -4111,8 +5886,11 @@ def render_generate_result(
                 "prompt": prompt,
                 "kind": "binary",
                 "local_path": saved_path,
+                "raw_chroma_path": raw_chroma_path,
                 "url": "",
                 "image_bytes": b"" if saved_path else image_bytes,
+                "transparent_check": transparent_check,
+                "transparent_requested": transparent_requested,
             }
         )
     elif result["kind"] == "url":
@@ -4137,7 +5915,7 @@ def render_generate_result(
     else:
         st.warning("Phản hồi không có dữ liệu ảnh rõ ràng. Hiển thị JSON thô.")
 
-    if result.get("raw") is not None and bool(st.session_state.get("ui_debug_mode", False)):
+    if result.get("raw") is not None and True:
         with st.expander("Xem JSON phản hồi"):
             st.json(result["raw"])
 
@@ -4159,7 +5937,7 @@ def trigger_generate(base_url: str, api_key: str, model: str, prompt: str, respo
         return
 
     st.session_state.last_payload = payload
-    if bool(st.session_state.get("ui_debug_mode", False)):
+    if True:
         with st.expander("Payload sẽ gửi"):
             st.json(payload)
 
@@ -4210,6 +5988,125 @@ def page_home(base_url: str, api_key: str) -> None:
         with st.expander("Chi tiết lỗi kết nối", expanded=False):
             st.code(str(health_data))
 
+    # ----- 7-day activity sparkline -----
+    try:
+        from collections import Counter
+
+        day_counts: Counter = Counter()
+        for item in history:
+            day = str(item.get("time", ""))[:10]
+            if day:
+                day_counts[day] += 1
+        recent_days: list[str] = []
+        from datetime import timedelta as _td
+
+        base_day = datetime.now()
+        for offset in range(6, -1, -1):
+            recent_days.append((base_day - _td(days=offset)).strftime("%Y-%m-%d"))
+        if any(day_counts.get(d, 0) for d in recent_days):
+            max_val = max(day_counts.get(d, 0) for d in recent_days) or 1
+            bars_html = []
+            for d in recent_days:
+                v = day_counts.get(d, 0)
+                pct = int(round(v / max_val * 100))
+                short = d[5:]
+                bars_html.append(
+                    f"""
+                    <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:.18rem;">
+                      <div style="height:54px;width:18px;background:rgba(255,255,255,.04);border-radius:6px;display:flex;align-items:flex-end;overflow:hidden;border:1px solid var(--nr-line);">
+                        <div style="width:100%;height:{pct}%;background:linear-gradient(180deg,#7B61FF 0%,#38BDF8 100%);box-shadow:0 0 8px rgba(123,97,255,.5);"></div>
+                      </div>
+                      <div style="font-size:.66rem;color:var(--nr-text-mute);">{short}</div>
+                      <div style="font-size:.74rem;color:var(--nr-text-soft);font-weight:700;">{v}</div>
+                    </div>
+                    """
+                )
+            st.markdown(
+                """
+                <div class="nr-dash-tile" style="margin-top:.4rem;">
+                  <div class="nr-dash-label">Hoạt động 7 ngày</div>
+                  <div style="display:flex;align-items:flex-end;gap:.42rem;margin-top:.5rem;">
+                """
+                + "".join(bars_html)
+                + "</div></div>",
+                unsafe_allow_html=True,
+            )
+    except Exception:
+        pass
+
+    # Cảnh báo dung lượng outputs nếu lớn (>2GB).
+    try:
+        outputs_dir = Path("outputs")
+        if outputs_dir.exists():
+            total_bytes = 0
+            for p in outputs_dir.rglob("*"):
+                if p.is_file():
+                    total_bytes += p.stat().st_size
+            size_gb = total_bytes / (1024 ** 3)
+            if size_gb >= 2.0:
+                st.warning(
+                    f"Thư mục `outputs/` đang dùng {size_gb:.2f} GB. Dùng nút 'Mở thư mục' trong Thư viện để dọn nếu cần."
+                )
+    except Exception:
+        pass
+
+    # Nút bắt đầu nhanh — dẫn thẳng vào Studio với tác vụ tương ứng.
+    st.markdown("#### Bắt đầu nhanh")
+    quick_actions = [
+        ("🖌 Tạo ảnh", "Tạo ảnh"),
+        ("⚡ AI đa năng", "AI đa năng (copy ảnh + lệnh tự do)"),
+        ("📚 Làm truyện", "Làm truyện tranh"),
+        ("🛠 Sửa ảnh", "Sửa ảnh"),
+        ("🧠 Tách nền auto", "Phân tích & tách nền"),
+        ("🟩 Xóa nền xanh", "Xóa nền chroma"),
+        ("✨ Nâng cấp", "Nâng cấp chất lượng"),
+        ("🌐 Dịch ảnh", "Dịch ảnh"),
+        ("🎨 Sao chép phong cách", "Sao chép phong cách"),
+        ("🎮 Asset game", "Vẽ asset game (không nền)"),
+        ("🐉 Art Tu Tiên Cờ", "Vẽ art game Tu Tiên Cờ"),
+    ]
+    quick_cols = st.columns(4)
+    for idx, (label, op_value) in enumerate(quick_actions):
+        with quick_cols[idx % 4]:
+            if st.button(label, use_container_width=True, key=f"btn_home_quick_{idx}"):
+                st.session_state.quick_operation = op_value
+                navigate_to_page(PAGE_DRAW)
+
+    # ----- Top models used (this week) -----
+    try:
+        from collections import Counter as _C
+
+        from datetime import timedelta as _td2
+
+        week_floor = (datetime.now() - _td2(days=7)).strftime("%Y-%m-%d")
+        week_models = _C(
+            str(item.get("model", ""))
+            for item in history
+            if str(item.get("time", ""))[:10] >= week_floor and str(item.get("model", "")).strip()
+        )
+        top_models = week_models.most_common(5)
+        if top_models:
+            st.markdown("#### Model dùng nhiều (7 ngày)")
+            cols = st.columns(min(5, len(top_models)))
+            total_w = sum(v for _, v in top_models) or 1
+            for i, (mname, count) in enumerate(top_models):
+                pct = int(round(count / total_w * 100))
+                short = mname.split("/")[-1]
+                with cols[i]:
+                    st.markdown(
+                        f"""
+                        <div class="nr-dash-tile">
+                          <div class="nr-dash-label">{html.escape(short)}</div>
+                          <div class="nr-dash-value">{count}</div>
+                          <div class="nr-dash-sub">{pct}% tuần này</div>
+                          <div class="nr-dash-bar"><span style="width:{pct}%"></span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+    except Exception:
+        pass
+
     st.markdown("#### Ảnh gần đây")
     local_items = [item for item in history if item.get("local_path")]
     if not local_items:
@@ -4230,37 +6127,6 @@ def page_home(base_url: str, api_key: str) -> None:
         shown += 1
         if shown >= 8:
             break
-
-
-def page_preset_studio() -> None:
-    st.subheader("Bộ preset")
-    st.caption("Chọn preset sẵn rồi áp dụng vào Studio để tạo ảnh ngay.")
-
-    sel_col, btn_col = st.columns([2.6, 1], gap="medium")
-    with sel_col:
-        preset_name = st.selectbox("Preset quy trình", options=list(WORKFLOW_PRESETS.keys()), key="studio_preset")
-    preset = WORKFLOW_PRESETS[preset_name]
-    with btn_col:
-        if st.button("✨ Áp dụng preset", type="primary", use_container_width=True):
-            apply_workflow_preset(preset_name)
-            apply_quality_profile_to_state()
-            st.success("Đã áp dụng preset.")
-
-    c1, c2 = st.columns([1, 1], gap="medium")
-    with c1:
-        st.markdown("**Thông số preset**")
-        st.json(preset)
-    with c2:
-        preview = optimize_prompt(
-            base_prompt=build_scene_prompt(preset["scene"], "chủ thể của bạn"),
-            style_name=preset["style"],
-            quality_name=preset["quality_profile"],
-            mood="không khí điện ảnh",
-            lighting="ánh sáng viền mềm",
-            camera="khung hình điện ảnh 35mm",
-        )
-        st.markdown("**Gợi ý prompt preview**")
-        st.code(preview)
 
 
 def page_lora_trainer(base_url: str, api_key: str) -> None:
@@ -4292,7 +6158,7 @@ def page_lora_trainer(base_url: str, api_key: str) -> None:
     tab_train, tab_monitor, tab_log = st.tabs(["Huấn luyện", "Theo dõi job", "Lịch sử train"])
 
     with tab_train:
-        is_debug_mode = bool(st.session_state.get("ui_debug_mode", False))
+        is_debug_mode = True
 
         workflow_options = list(LORA_WORKFLOW_PROFILES.keys())
         if st.session_state.get("lora_workflow_mode") not in workflow_options:
@@ -4828,656 +6694,6 @@ def render_workflow_intro(title: str, description: str) -> None:
     )
 
 
-def render_create_workflow(base_url: str, api_key: str, model: str, compact_mode: bool) -> None:
-    def reset_create_form() -> None:
-        st.session_state.quick_subject = ""
-        st.session_state.create_ref_inline_pasted = ""
-        st.session_state.create_ref_inline_quick_link = ""
-        st.session_state.create_modifiers = []
-        st.session_state.create_use_reference = False
-        st.session_state.create_clipboard_slot_bytes = [None] * 6
-
-    if "create_ref_inline_pasted" not in st.session_state:
-        st.session_state.create_ref_inline_pasted = ""
-    if "create_ref_inline_quick_link" not in st.session_state:
-        st.session_state.create_ref_inline_quick_link = ""
-    if "create_clipboard_slot_count" not in st.session_state:
-        st.session_state.create_clipboard_slot_count = 2
-    if "create_clipboard_slot_bytes" not in st.session_state:
-        st.session_state.create_clipboard_slot_bytes = [None] * 6
-
-    prompt_input = st.text_area(
-        "Ô prompt chính (đặt trên cùng)",
-        key="quick_subject",
-        height=180,
-        placeholder="Mô tả ảnh muốn tạo. Có thể dán URL/data:image/base64 hoặc link ảnh mẫu vào đây.",
-    )
-
-    tier_default = st.session_state.create_quality_tier if st.session_state.create_quality_tier in QUALITY_TIER_PRESETS else "Fast"
-    top_cols = [1.35, 0.7, 1.0, 0.85, 0.95] if compact_mode else [1.45, 0.78, 1.05, 0.88, 1.02]
-    top_gap = "small" if compact_mode else "medium"
-    top_a, top_b, top_c, top_d, top_f = st.columns(top_cols, gap=top_gap)
-    with top_a:
-        selected_tier = pill_single_select(
-            "Mức chất lượng",
-            options=list(QUALITY_TIER_PRESETS.keys()),
-            key="create_quality_tier",
-            default=tier_default,
-        )
-    with top_b:
-        st.number_input("Số ảnh", min_value=1, max_value=60, step=1, key="create_count_ui")
-    with top_c:
-        response_format_widget("Kiểu trả ảnh", key="create_response_format_ui", index=0)
-    with top_d:
-        st.toggle("Dùng ảnh mẫu", key="create_use_reference")
-    with top_f:
-        action_l, action_r = st.columns([0.85, 1.4], gap="small")
-        with action_l:
-            st.button("🧹 Xóa", use_container_width=True, key="btn_create_reset", on_click=reset_create_form)
-        with action_r:
-            generate_clicked = st.button("✨ Tạo ảnh", type="primary", use_container_width=True, key="btn_create_image")
-
-    tier_config = QUALITY_TIER_PRESETS[selected_tier]
-    st.session_state.quick_quality_profile = str(tier_config["quality_profile"])
-    st.caption(f"Chế độ {selected_tier}: {tier_config['note']} • gợi ý {tier_config['count']} ảnh/lần")
-
-    split_cols = [1.9, 1.0] if compact_mode else [1.75, 1.05]
-    split_gap = "medium" if compact_mode else "large"
-    left_col, right_col = st.columns(split_cols, gap=split_gap)
-
-    quick_mods: list[str] = []
-    auto_clicked = False
-    auto_rounds = 4
-    auto_delay = 0.4
-    auto_random_scene = True
-    auto_random_style = True
-    is_debug_mode = bool(st.session_state.get("ui_debug_mode", False))
-    with left_col:
-        fast_gap = "small" if compact_mode else "medium"
-        fast1, fast2, fast3, fast4 = st.columns([1.2, 1, 1, 0.85], gap=fast_gap)
-        with fast1:
-            st.selectbox("Bối cảnh", options=list(SCENE_PRESETS.keys()), key="quick_scene")
-        with fast2:
-            st.selectbox("Phong cách", options=list(STYLE_PRESETS.keys()), key="quick_style")
-        with fast3:
-            st.selectbox("Kích thước", options=list(SIZE_PRESETS.keys()), key="quick_size_preset")
-        with fast4:
-            st.selectbox("Tỉ lệ", options=ASPECT_RATIO_PRESETS, key="quick_aspect_ratio")
-
-        if st.session_state.quick_size_preset == "Tùy chỉnh":
-            st.text_input("Kích thước tùy chỉnh (ví dụ: 1344x768)", key="gen_custom_size")
-
-        quick_mods = pill_multi_select(
-            "Tinh chỉnh nhanh",
-            options=list(CREATE_PROMPT_MODIFIERS.keys()),
-            key="create_modifiers",
-            default=st.session_state.create_modifiers,
-        )
-
-        opt1, opt2 = st.columns(2)
-        with opt1:
-            st.checkbox("Tối ưu prompt tự động", key="quick_use_optimizer")
-        with opt2:
-            st.checkbox("Tự thêm negative prompt", key="quick_auto_negative")
-
-        with st.expander("Tinh chỉnh nâng cao", expanded=False):
-            detail1, detail2, detail3 = st.columns(3)
-            with detail1:
-                st.text_input("Cảm xúc", key="quick_mood")
-            with detail2:
-                st.text_input("Ánh sáng", key="quick_lighting")
-            with detail3:
-                st.text_input("Góc máy", key="quick_camera")
-            st.text_area("JSON bổ sung (tùy chọn)", value=str(st.session_state.get("create_extra_json", "{}")), height=84, key="create_extra_json")
-
-            if is_debug_mode:
-                st.divider()
-                st.caption("Auto ngẫu nhiên chỉ hiện ở chế độ nâng cao.")
-                a1, a2, a3 = st.columns([1, 1, 1])
-                with a1:
-                    auto_rounds = int(st.number_input("Số lượt auto", min_value=2, max_value=20, value=4, step=1, key="create_auto_rounds"))
-                with a2:
-                    auto_delay = float(st.slider("Nghỉ giữa lượt (giây)", min_value=0.0, max_value=2.0, value=0.4, step=0.1, key="create_auto_delay"))
-                with a3:
-                    auto_clicked = st.button("Bắt đầu Auto", key="btn_create_auto", use_container_width=True)
-                t1, t2 = st.columns(2)
-                with t1:
-                    auto_random_scene = st.checkbox("Đổi bối cảnh mỗi lượt", value=True, key="create_auto_random_scene")
-                with t2:
-                    auto_random_style = st.checkbox("Đổi phong cách mỗi lượt", value=True, key="create_auto_random_style")
-
-    ref_mode = "1 ảnh"
-    draw_mode = st.session_state.get("create_reference_draw_mode", list(REFERENCE_DRAW_MODES.keys())[0])
-    uploaded_files: list[Any] = []
-    pasted_refs_text = ""
-    save_inputs = True
-    slot_clipboard_images: list[bytes] = []
-    slot_role_instructions: list[str] = []
-
-    slot_role_options = [
-        "Giữ nội dung/chủ thể",
-        "Lấy phong cách màu",
-        "Lấy bố cục/góc máy",
-        "Lấy chất liệu/texture",
-        "Tự do",
-    ]
-    slot_role_map = {
-        "Giữ nội dung/chủ thể": "giữ chủ thể và nội dung từ ảnh mẫu",
-        "Lấy phong cách màu": "ưu tiên phong cách màu từ ảnh mẫu",
-        "Lấy bố cục/góc máy": "ưu tiên bố cục và góc máy từ ảnh mẫu",
-        "Lấy chất liệu/texture": "ưu tiên chất liệu và texture từ ảnh mẫu",
-        "Tự do": "tham chiếu linh hoạt từ ảnh mẫu",
-    }
-    preserve_ref_mode = bool(st.session_state.get("create_ref_preserve_mode", True))
-
-    with right_col:
-        st.markdown("#### Ảnh mẫu")
-        if st.session_state.create_use_reference:
-            ref_mode = st.radio(
-                "Số ảnh mẫu",
-                options=["1 ảnh", "Nhiều ảnh"],
-                horizontal=True,
-                key="create_reference_mode",
-            )
-            draw_mode = st.selectbox(
-                "Cách vẽ theo ảnh mẫu",
-                options=list(REFERENCE_DRAW_MODES.keys()),
-                key="create_reference_draw_mode",
-            )
-            preserve_ref_mode = st.checkbox(
-                "Giữ gần ảnh mẫu (mặc định)",
-                value=preserve_ref_mode,
-                key="create_ref_preserve_mode",
-            )
-
-            st.number_input(
-                "Số ô dán clipboard",
-                min_value=1,
-                max_value=6,
-                step=1,
-                key="create_clipboard_slot_count",
-            )
-
-            if paste_image_button is not None:
-                for slot_idx in range(int(st.session_state.create_clipboard_slot_count)):
-                    button_col, clear_col = st.columns([1.35, 0.65], gap="small")
-                    with button_col:
-                        pasted_from_clipboard = paste_image_button(
-                            f"📋 Dán ảnh ô {slot_idx + 1}",
-                            key=f"create_clipboard_paste_{slot_idx}",
-                        )
-                        clipboard_image = getattr(pasted_from_clipboard, "image_data", None)
-                        if clipboard_image is not None:
-                            buffer = io.BytesIO()
-                            clipboard_image.save(buffer, format="PNG")
-                            st.session_state.create_clipboard_slot_bytes[slot_idx] = buffer.getvalue()
-                    with clear_col:
-                        if st.button(f"Xóa ô {slot_idx + 1}", key=f"btn_clear_clip_slot_{slot_idx}", use_container_width=True):
-                            st.session_state.create_clipboard_slot_bytes[slot_idx] = None
-
-                    slot_bytes = st.session_state.create_clipboard_slot_bytes[slot_idx]
-                    if slot_bytes:
-                        role_col, weight_col = st.columns([1.45, 0.95], gap="small")
-                        with role_col:
-                            selected_role = st.selectbox(
-                                f"Vai trò ô {slot_idx + 1}",
-                                options=slot_role_options,
-                                key=f"create_clip_slot_role_{slot_idx}",
-                            )
-                        with weight_col:
-                            role_weight = st.slider(
-                                f"Độ ảnh hưởng ô {slot_idx + 1}",
-                                min_value=0.1,
-                                max_value=2.0,
-                                value=1.0,
-                                step=0.1,
-                                key=f"create_clip_slot_weight_{slot_idx}",
-                            )
-
-                        role_phrase = slot_role_map.get(selected_role, "tham chiếu từ ảnh mẫu")
-                        slot_role_instructions.append(
-                            f"{role_phrase} ô {slot_idx + 1} (mức {role_weight:.1f})"
-                        )
-                        st.image(slot_bytes, width=132, caption=f"Ô {slot_idx + 1}")
-                        slot_clipboard_images.append(slot_bytes)
-            else:
-                st.caption("Clipboard chưa sẵn sàng. Dùng Upload hoặc dán URL/base64.")
-
-            uploaded_files = st.file_uploader(
-                "Tải ảnh mẫu (PNG/JPG/WEBP)",
-                type=["png", "jpg", "jpeg", "webp"],
-                accept_multiple_files=True,
-                key="create_ref_inline_uploader",
-            )
-            pasted_refs_text = st.text_area(
-                "Dán URL / data:image / base64",
-                key="create_ref_inline_pasted",
-                height=88,
-                placeholder="Mỗi dòng một nguồn ảnh",
-            )
-            save_inputs = st.checkbox(
-                "Lưu bản sao ảnh mẫu",
-                value=True,
-                key="create_ref_inline_save_input_copy",
-            )
-
-            slot_count_show = int(st.session_state.get("create_clipboard_slot_count", 1))
-            if slot_count_show > 0:
-                st.markdown("**Ảnh đã copy theo từng ô**")
-                thumb_cols = st.columns(slot_count_show)
-                for slot_idx in range(slot_count_show):
-                    with thumb_cols[slot_idx]:
-                        slot_bytes = st.session_state.create_clipboard_slot_bytes[slot_idx]
-                        if slot_bytes:
-                            st.image(slot_bytes, width=88, caption=f"Ô {slot_idx + 1}")
-                        else:
-                            st.caption(f"Ô {slot_idx + 1}: chưa có ảnh")
-        else:
-            pasted_refs_text = st.text_input(
-                "Dán nhanh link ảnh (tùy chọn)",
-                key="create_ref_inline_quick_link",
-                placeholder="https://...",
-            )
-            if st.session_state.quick_aspect_ratio == ASPECT_RATIO_ORIGINAL:
-                st.info("Tỉ lệ 'Nguyên gốc theo ảnh mẫu' cần bật Dùng ảnh mẫu để hoạt động đúng.")
-
-    refs: list[str] = []
-    preview_bytes: list[bytes] = []
-    saved_paths: list[str] = []
-
-    uploaded_list = uploaded_files or []
-    if ref_mode == "1 ảnh" and len(uploaded_list) > 1:
-        uploaded_list = uploaded_list[:1]
-
-    for idx, up in enumerate(uploaded_list, start=1):
-        content = up.getvalue()
-        mime_type = guess_mime_type(getattr(up, "name", "image.png"), getattr(up, "type", ""))
-        refs.append(safe_image_to_data_url(content, mime_type))
-        preview_bytes.append(content)
-        if save_inputs:
-            saved_paths.append(save_uploaded_input_copy(content, getattr(up, "name", f"img_{idx}.png"), "create_ref", idx))
-
-    for clip_idx, clip_bytes in enumerate(slot_clipboard_images, start=1):
-        refs.append(safe_image_to_data_url(clip_bytes, "image/png"))
-        preview_bytes.append(clip_bytes)
-        if save_inputs:
-            saved_paths.append(save_uploaded_input_copy(clip_bytes, f"clipboard_{clip_idx}.png", "create_ref", 100 + clip_idx))
-
-    refs.extend(parse_pasted_image_refs(pasted_refs_text or ""))
-    prompt_refs = parse_pasted_image_refs(prompt_input or "")
-    refs.extend(prompt_refs)
-    refs = unique_list(refs)
-
-    if preview_bytes:
-        with st.expander(f"Xem trước {len(preview_bytes)} ảnh mẫu", expanded=False):
-            preview_cols = st.columns(min(4, len(preview_bytes)))
-            for idx, img_bytes in enumerate(preview_bytes):
-                with preview_cols[idx % len(preview_cols)]:
-                    st.image(img_bytes, width=150)
-
-    if refs:
-        st.markdown(
-            f"<div class='studio-status-chip'>Đã nhận {len(refs)} ảnh mẫu cho lượt tạo này</div>",
-            unsafe_allow_html=True,
-        )
-
-    if saved_paths:
-        with st.expander("Đường dẫn ảnh mẫu đã lưu", expanded=False):
-            for path in saved_paths:
-                st.code(path)
-
-    subject_for_scene = prompt_input
-    if prompt_refs:
-        subject_for_scene = re.sub(r"https?://\S+|data:image/\S+", " ", prompt_input, flags=re.IGNORECASE).strip()
-        if not subject_for_scene:
-            subject_for_scene = "ảnh mẫu đã dán"
-
-    base_prompt = build_scene_prompt(st.session_state.quick_scene, subject_for_scene)
-    suggested_prompt = (
-        optimize_prompt(
-            base_prompt=base_prompt,
-            style_name=st.session_state.quick_style,
-            quality_name=st.session_state.quick_quality_profile,
-            mood=st.session_state.quick_mood,
-            lighting=st.session_state.quick_lighting,
-            camera=st.session_state.quick_camera,
-        )
-        if st.session_state.quick_use_optimizer
-        else base_prompt
-    )
-
-    if quick_mods:
-        mod_text = ", ".join(CREATE_PROMPT_MODIFIERS[item] for item in quick_mods)
-        suggested_prompt = f"{suggested_prompt}, {mod_text}"
-
-    if st.session_state.create_use_reference or refs:
-        suggested_prompt = f"{suggested_prompt}, {REFERENCE_DRAW_MODES.get(draw_mode, '')}"
-        if preserve_ref_mode:
-            suggested_prompt = (
-                f"{suggested_prompt}, giữ nguyên bố cục/chủ thể chính từ ảnh mẫu, chỉ thay đổi nhẹ theo yêu cầu"
-            )
-        if slot_role_instructions:
-            suggested_prompt = f"{suggested_prompt}, {'; '.join(slot_role_instructions)}"
-
-    final_prompt = suggested_prompt
-    with st.expander("Xem/chỉnh prompt cuối", expanded=False):
-        edit_final_prompt = st.toggle("Chỉnh prompt cuối", value=False, key="create_edit_final_prompt")
-        if edit_final_prompt:
-            final_prompt = st.text_area("Prompt cuối cùng", value=suggested_prompt, height=110)
-        else:
-            preview_prompt = suggested_prompt if len(suggested_prompt) <= 520 else f"{suggested_prompt[:520]}..."
-            st.markdown(f"<div class='prompt-preview-box'>{html.escape(preview_prompt)}</div>", unsafe_allow_html=True)
-
-    if (auto_clicked or generate_clicked) and not subject_for_scene.strip() and not refs:
-        st.error("Hãy nhập mô tả hoặc thêm ảnh mẫu trước khi tạo để tránh prompt lạc đề.")
-        return
-
-    if auto_clicked:
-        try:
-            extra_auto = parse_json_object(str(st.session_state.get("create_extra_json", "{}")))
-        except Exception as ex:
-            st.error(f"JSON bổ sung không hợp lệ: {ex}")
-            return
-
-        flavor_tags = [
-            "biến thể sáng tạo",
-            "chi tiết sắc nét",
-            "ánh sáng điện ảnh",
-            "bố cục mạnh",
-            "phong cách mới lạ",
-            "tập trung chủ thể",
-        ]
-
-        progress = st.progress(0.0)
-        st.info(f"Đang auto tạo ngẫu nhiên {auto_rounds} lượt...")
-
-        for run_idx in range(auto_rounds):
-            scene_auto = random.choice(list(SCENE_PRESETS.keys())) if auto_random_scene else st.session_state.quick_scene
-            style_auto = random.choice(list(STYLE_PRESETS.keys())) if auto_random_style else st.session_state.quick_style
-
-            base_auto_prompt = build_scene_prompt(scene_auto, subject_for_scene)
-            auto_prompt = (
-                optimize_prompt(
-                    base_prompt=base_auto_prompt,
-                    style_name=style_auto,
-                    quality_name=st.session_state.quick_quality_profile,
-                    mood=st.session_state.quick_mood,
-                    lighting=st.session_state.quick_lighting,
-                    camera=st.session_state.quick_camera,
-                )
-                if st.session_state.quick_use_optimizer
-                else base_auto_prompt
-            )
-
-            if quick_mods:
-                mod_text = ", ".join(CREATE_PROMPT_MODIFIERS[item] for item in quick_mods)
-                auto_prompt = f"{auto_prompt}, {mod_text}"
-
-            auto_prompt = f"{auto_prompt}, {random.choice(flavor_tags)}"
-
-            if st.session_state.create_use_reference or refs:
-                auto_prompt = f"{auto_prompt}, {REFERENCE_DRAW_MODES.get(draw_mode, '')}"
-                if preserve_ref_mode:
-                    auto_prompt = (
-                        f"{auto_prompt}, giữ nguyên bố cục/chủ thể chính từ ảnh mẫu, chỉ thay đổi nhẹ theo yêu cầu"
-                    )
-                if slot_role_instructions:
-                    auto_prompt = f"{auto_prompt}, {'; '.join(slot_role_instructions)}"
-
-            payload: dict[str, Any] = {
-                "model": model,
-                "prompt": auto_prompt,
-                "n": int(st.session_state.create_count_ui),
-            }
-
-            selected_size = ""
-            if st.session_state.quick_size_preset == "Tùy chỉnh":
-                selected_size = st.session_state.gen_custom_size.strip()
-            else:
-                selected_size = SIZE_PRESETS.get(st.session_state.quick_size_preset, "").strip()
-            if selected_size and not (refs and st.session_state.quick_aspect_ratio == ASPECT_RATIO_ORIGINAL):
-                payload["size"] = selected_size
-
-            quality_value = str(QUALITY_PROFILES.get(st.session_state.quick_quality_profile, {}).get("quality", "")).strip()
-            if quality_value:
-                payload["quality"] = quality_value
-
-            style_value = str(STYLE_PRESETS.get(style_auto, {}).get("style", "")).strip()
-            if style_value:
-                payload["style"] = style_value
-
-            response_format = str(st.session_state.create_response_format_ui)
-            if response_format in {"url", "b64_json"}:
-                payload["response_format"] = response_format
-
-            if st.session_state.quick_auto_negative:
-                auto_negative = str(STYLE_PRESETS.get(style_auto, {}).get("negative_prompt", "")).strip()
-                if auto_negative:
-                    payload["negative_prompt"] = auto_negative
-
-            if st.session_state.quick_aspect_ratio.strip() and st.session_state.quick_aspect_ratio != ASPECT_RATIO_ORIGINAL:
-                payload["aspect_ratio"] = st.session_state.quick_aspect_ratio.strip()
-
-            payload.update(extra_auto)
-
-            if refs:
-                if ref_mode == "1 ảnh":
-                    payload["image"] = refs[0]
-                else:
-                    payload["images"] = refs
-
-            output_file = f"{st.session_state.studio_output_prefix}_auto_{run_idx + 1}_{timestamp_slug()}.png"
-            run_payload_generation(
-                base_url,
-                api_key,
-                payload,
-                response_format,
-                output_file,
-                f"Auto ngẫu nhiên {run_idx + 1}/{auto_rounds}",
-            )
-
-            progress.progress((run_idx + 1) / auto_rounds)
-            if auto_delay > 0 and run_idx < auto_rounds - 1:
-                time.sleep(auto_delay)
-
-        st.success("Đã hoàn tất auto tạo ngẫu nhiên")
-
-    if generate_clicked:
-        try:
-            st.session_state.studio_count = int(st.session_state.create_count_ui)
-            st.session_state.studio_response_format = str(st.session_state.create_response_format_ui)
-            st.session_state.gen_style = st.session_state.quick_style
-            st.session_state.gen_quality_profile = st.session_state.quick_quality_profile
-            st.session_state.gen_size_preset = st.session_state.quick_size_preset
-            st.session_state.gen_aspect_ratio = st.session_state.quick_aspect_ratio
-            st.session_state.gen_count = int(st.session_state.studio_count)
-            st.session_state.gen_response_format = st.session_state.studio_response_format
-            st.session_state.gen_prompt = final_prompt
-            st.session_state.gen_negative_prompt = ""
-            st.session_state.gen_quality_override = ""
-            st.session_state.gen_style_override = ""
-            st.session_state.gen_extra_json = str(st.session_state.get("create_extra_json", "{}"))
-
-            payload = build_payload(
-                model=model,
-                prompt=final_prompt,
-                include_advanced=False,
-                response_format=st.session_state.studio_response_format,
-            )
-            if refs:
-                if ref_mode == "1 ảnh":
-                    payload["image"] = refs[0]
-                else:
-                    payload["images"] = refs
-                if st.session_state.quick_aspect_ratio == ASPECT_RATIO_ORIGINAL:
-                    payload.pop("aspect_ratio", None)
-                    payload.pop("size", None)
-        except Exception as ex:
-            st.error(f"Không thể tạo payload: {ex}")
-            return
-
-        output_file = f"{st.session_state.studio_output_prefix}_create_{timestamp_slug()}.png"
-        run_payload_generation(base_url, api_key, payload, st.session_state.studio_response_format, output_file, "Tạo ảnh")
-
-
-def render_edit_workflow(base_url: str, api_key: str, model: str, compact_mode: bool) -> None:
-    render_workflow_intro(
-        "Sửa ảnh theo ảnh mẫu",
-        "Giữ bố cục ảnh gốc, chỉ thay phần bạn muốn chỉnh.",
-    )
-    left_col, right_col = st.columns([1.45, 1.05], gap="large")
-    with right_col:
-        refs, _, _ = collect_reference_images("edit", allow_multiple=False, compact_mode=compact_mode)
-
-    with left_col:
-        p1, p2, p3 = st.columns([1.25, 0.95, 0.8], gap="medium")
-        with p1:
-            preset_name = st.selectbox("Mục tiêu chỉnh sửa", options=list(EDIT_PRESET_PROMPTS.keys()), key="edit_preset_name")
-        with p2:
-            edit_strength = st.slider("Mức thay đổi", min_value=0.1, max_value=1.0, step=0.05, value=0.7, key="edit_strength")
-        with p3:
-            if st.button("Nạp mẫu", key="btn_load_edit_preset", use_container_width=True):
-                st.session_state.edit_prompt = EDIT_PRESET_PROMPTS[preset_name]
-
-        edit_prompt = st.text_area(
-            "Mô tả chỉnh sửa",
-            value=EDIT_PRESET_PROMPTS[preset_name],
-            height=96,
-            key="edit_prompt",
-        )
-        with st.expander("JSON bổ sung", expanded=False):
-            edit_extra = st.text_area("JSON bổ sung (tùy chọn)", value="{}", height=84, key="edit_extra_json")
-
-    if st.button("Sửa ảnh", type="primary", use_container_width=True, key="btn_edit_image"):
-        if not refs:
-            st.error("Bạn cần tải lên hoặc dán ít nhất 1 ảnh tham chiếu.")
-            return
-        try:
-            payload: dict[str, Any] = {
-                "model": model,
-                "prompt": edit_prompt,
-                "n": int(st.session_state.studio_count),
-                "image": refs[0],
-                "strength": float(edit_strength),
-            }
-            payload.update(parse_json_object(edit_extra))
-        except Exception as ex:
-            st.error(f"JSON bổ sung không hợp lệ: {ex}")
-            return
-
-        output_file = f"{st.session_state.studio_output_prefix}_edit_{timestamp_slug()}.png"
-        run_payload_generation(base_url, api_key, payload, st.session_state.studio_response_format, output_file, "Sửa ảnh")
-
-
-def render_compose_workflow(base_url: str, api_key: str, model: str, compact_mode: bool) -> None:
-    render_workflow_intro(
-        "Ghép nhiều ảnh",
-        "Ghép nhiều ảnh thành 1 bố cục gọn, nhất quán.",
-    )
-    left_col, right_col = st.columns([1.45, 1.05], gap="large")
-    with right_col:
-        refs, _, _ = collect_reference_images("compose", allow_multiple=True, compact_mode=compact_mode)
-
-    with left_col:
-        c1, c2, c3 = st.columns([1.2, 1.0, 0.8], gap="medium")
-        with c1:
-            compose_preset = st.selectbox("Mẫu ghép", options=list(COMPOSE_PRESET_PROMPTS.keys()), key="compose_preset_name")
-        with c2:
-            compose_layout = st.selectbox(
-                "Kiểu ghép",
-                options=list(COMPOSE_LAYOUT_OPTIONS.keys()),
-                key="compose_layout",
-                format_func=lambda value: COMPOSE_LAYOUT_OPTIONS.get(value, value),
-            )
-        with c3:
-            if st.button("Nạp mẫu", key="btn_load_compose_preset", use_container_width=True):
-                st.session_state.compose_prompt = COMPOSE_PRESET_PROMPTS[compose_preset]
-
-        compose_prompt = st.text_area(
-            "Mô tả ghép ảnh",
-            value=COMPOSE_PRESET_PROMPTS[compose_preset],
-            height=96,
-            key="compose_prompt",
-        )
-        with st.expander("JSON bổ sung", expanded=False):
-            compose_extra = st.text_area("JSON bổ sung (tùy chọn)", value="{}", height=84, key="compose_extra_json")
-
-    if st.button("Ghép ảnh", type="primary", use_container_width=True, key="btn_compose_image"):
-        if len(refs) < 2:
-            st.error("Bạn cần ít nhất 2 ảnh để ghép.")
-            return
-        try:
-            payload = {
-                "model": model,
-                "prompt": f"{compose_prompt}. Bố cục ưu tiên kiểu {COMPOSE_LAYOUT_OPTIONS.get(compose_layout, compose_layout)}",
-                "n": int(st.session_state.studio_count),
-                "images": refs,
-            }
-            payload.update(parse_json_object(compose_extra))
-        except Exception as ex:
-            st.error(f"JSON bổ sung không hợp lệ: {ex}")
-            return
-
-        output_file = f"{st.session_state.studio_output_prefix}_compose_{timestamp_slug()}.png"
-        run_payload_generation(base_url, api_key, payload, st.session_state.studio_response_format, output_file, "Ghép ảnh")
-
-
-def render_translate_workflow(base_url: str, api_key: str, model: str, compact_mode: bool) -> None:
-    render_workflow_intro(
-        "Dịch chữ trên ảnh",
-        "Giữ nguyên bố cục, chỉ thay nội dung chữ.",
-    )
-    left_col, right_col = st.columns([1.45, 1.05], gap="large")
-    with right_col:
-        refs, _, _ = collect_reference_images("translate", allow_multiple=False, compact_mode=compact_mode)
-
-    with left_col:
-        t1, t2, t3 = st.columns([1, 1, 1.12], gap="medium")
-        with t1:
-            src_lang = st.selectbox("Ngôn ngữ nguồn", options=TRANSLATE_LANG_OPTIONS, index=1, key="translate_src")
-        with t2:
-            target_lang = st.selectbox("Ngôn ngữ đích", options=TRANSLATE_LANG_OPTIONS, index=0, key="translate_tgt")
-        with t3:
-            tone = st.selectbox("Mức ưu tiên", options=TRANSLATE_TONE_OPTIONS, key="translate_tone")
-
-        translate_note = st.text_area(
-            "Ghi chú thêm",
-            value="Giữ nguyên font và vị trí chữ tối đa có thể",
-            height=74,
-            key="translate_note",
-        )
-        translate_prompt = f"{build_translate_prompt(src_lang, target_lang, translate_note)} Ưu tiên: {tone.lower()}."
-
-        edit_translate_prompt = st.toggle("Chỉnh prompt dịch", value=False, key="translate_edit_prompt")
-        if edit_translate_prompt:
-            translate_prompt_user = st.text_area("Prompt dịch ảnh", value=translate_prompt, height=96, key="translate_prompt_preview")
-        else:
-            translate_prompt_user = translate_prompt
-            st.markdown(f"<div class='prompt-preview-box'>{html.escape(translate_prompt_user[:360])}</div>", unsafe_allow_html=True)
-
-        with st.expander("JSON bổ sung", expanded=False):
-            translate_extra = st.text_area("JSON bổ sung (tùy chọn)", value="{}", height=84, key="translate_extra_json")
-
-    if st.button("Dịch ảnh", type="primary", use_container_width=True, key="btn_translate_image"):
-        if not refs:
-            st.error("Bạn cần tải lên hoặc dán 1 ảnh trước khi dịch.")
-            return
-        try:
-            payload = {
-                "model": model,
-                "prompt": translate_prompt_user,
-                "n": int(st.session_state.studio_count),
-                "image": refs[0],
-            }
-            payload.update(parse_json_object(translate_extra))
-        except Exception as ex:
-            st.error(f"JSON bổ sung không hợp lệ: {ex}")
-            return
-
-        output_file = f"{st.session_state.studio_output_prefix}_translate_{timestamp_slug()}.png"
-        run_payload_generation(base_url, api_key, payload, st.session_state.studio_response_format, output_file, "Dịch ảnh")
-
-
 def render_story_workflow(base_url: str, api_key: str, model: str) -> None:
     ensure_story_builder_state()
     render_workflow_intro(
@@ -5515,7 +6731,7 @@ def render_story_workflow(base_url: str, api_key: str, model: str) -> None:
         )
     with top2:
         story_style = st.selectbox("Phong cách vẽ", options=COMIC_STYLE_OPTIONS, key="story_style")
-        story_beat = st.selectbox("Nhịp truyện", options=STORY_BEAT_OPTIONS, key="story_beat")
+        story_beat = st.selectbox("Nhịp truyện", options=["Mở đầu -> Cao trào -> Kết", "Hành trình nhân vật", "Quảng bá sản phẩm", "Minh họa kiến thức"], key="story_beat")
     with top3:
         story_ratio = st.selectbox("Tỉ lệ khung hình", options=["1:1", "16:9", "9:16", "3:2"], index=1, key="story_ratio")
         st.number_input(
@@ -5884,6 +7100,20 @@ def render_story_workflow(base_url: str, api_key: str, model: str) -> None:
             st.rerun()
 
     if generate_clicked:
+        if not panels:
+            st.error("Chưa có khung nào trong truyện. Hãy thêm ít nhất 1 khung trước khi tạo.")
+            return
+        empty_panels = [
+            idx for idx, panel in enumerate(panels, start=1)
+            if not str(panel.get("prompt", "") or "").strip()
+        ]
+        if empty_panels:
+            st.warning(
+                "Một số khung chưa có lệnh: "
+                + ", ".join(f"#{i}" for i in empty_panels)
+                + ". Hãy nhập mô tả để tránh bị tạo lệch."
+            )
+            return
         try:
             extra = parse_json_object(str(st.session_state.get("story_extra_json", "{}")))
         except Exception as ex:
@@ -6099,6 +7329,10 @@ def _normalize_quick_choice(value: str, options: list[str]) -> str:
     clean = str(value or "").strip()
     if clean in options:
         return clean
+    legacy_map = {"Xóa nền xanh": "Xóa nền chroma"}
+    mapped = legacy_map.get(clean)
+    if mapped in options:
+        return mapped
     return options[0] if options else ""
 
 
@@ -6215,6 +7449,11 @@ def render_payload_command_panel(
     bg_value = str(payload.get("background", "")).strip()
     if bg_value:
         base_rows.append(("Background", bg_value))
+    format_value = str(payload.get("output_format", "")).strip()
+    if format_value:
+        base_rows.append(("Output", format_value))
+    if payload_requests_green_screen_removal(payload):
+        base_rows.append(("Không nền", "Vẽ nền xanh #00FF00 → tự xóa"))
     sampler_value = str(payload.get("sampler", "")).strip()
     if sampler_value:
         base_rows.append(("Sampler", sampler_value))
@@ -6426,6 +7665,10 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
         st.session_state.quick_remix_clip_refs = []
     if "quick_universal_clip_refs" not in st.session_state:
         st.session_state.quick_universal_clip_refs = []
+    if "quick_green_clip_refs" not in st.session_state:
+        st.session_state.quick_green_clip_refs = []
+    if "quick_analyze_bg_clip_refs" not in st.session_state:
+        st.session_state.quick_analyze_bg_clip_refs = []
     if "quick_batch_commands_text" not in st.session_state:
         st.session_state.quick_batch_commands_text = "\n".join(pose_command_presets[:5])
     if "quick_batch_use_commands" not in st.session_state:
@@ -6447,6 +7690,39 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
         )
 
     # Compact toolbar: model + operation + utilities on a single tight row.
+    def _reset_quick_studio_defaults() -> None:
+        apply_everyday_studio_defaults()
+        st.session_state.quick_operation = QUICK_OPERATION_OPTIONS[0]
+        st.session_state.quick_simple_count = str(QUICK_COUNT_OPTIONS[0])
+        st.session_state.quick_simple_ratio = QUICK_RATIO_OPTIONS[0]
+        st.session_state.quick_simple_style = QUICK_STYLE_OPTIONS[0]
+        st.session_state.quick_simple_quality = QUICK_QUALITY_OPTIONS[0]
+        st.session_state.quick_simple_use_reference = False
+        st.session_state.quick_simple_ref_mode = "1 ảnh"
+        st.session_state.quick_simple_mode = DEFAULT_MULTI_API_MODE
+        st.session_state.quick_simple_speed = list(QUICK_SPEED_PRESETS.keys())[0]
+        st.session_state.quick_prompt_clip_refs = []
+        st.session_state.quick_edit_clip_refs = []
+        st.session_state.quick_upscale_clip_refs = []
+        st.session_state.quick_translate_clip_refs = []
+        st.session_state.quick_remix_clip_refs = []
+        st.session_state.quick_universal_clip_refs = []
+        st.session_state.quick_green_clip_refs = []
+        st.session_state.quick_analyze_bg_clip_refs = []
+        st.session_state.quick_character_detail_note = ""
+        for scope in ("quick", "quick_universal", "quick_remix", "quick_edit", "quick_upscale", "quick_translate", "quick_style"):
+            st.session_state[f"{scope}_batch_use_commands"] = False
+            st.session_state[f"{scope}_batch_use_all_presets"] = False
+        # Reset các slider Advanced về mặc định để không "ma"
+        st.session_state.gen_cfg_scale = 7.0
+        st.session_state.gen_steps = 40
+        st.session_state.gen_strength = 0.75
+        st.session_state.gen_clip_skip = 1
+        st.session_state.gen_seed = ""
+        st.session_state.gen_sampler = ""
+        st.session_state.gen_negative_prompt = ""
+        st.session_state["_quick_reset_notice"] = True
+
     bar_model, bar_op, bar_util = st.columns([1.6, 2.4, 1.0], gap="small")
     with bar_model:
         selected_top = pill_single_select(
@@ -6478,24 +7754,14 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                 else:
                     st.error(load_msg)
         with util2:
-            if st.button("⟲ Reset", use_container_width=True, key="btn_quick_clean_defaults"):
-                apply_everyday_studio_defaults()
-                st.session_state.quick_operation = QUICK_OPERATION_OPTIONS[0]
-                st.session_state.quick_simple_count = str(QUICK_COUNT_OPTIONS[0])
-                st.session_state.quick_simple_ratio = QUICK_RATIO_OPTIONS[0]
-                st.session_state.quick_simple_style = QUICK_STYLE_OPTIONS[0]
-                st.session_state.quick_simple_quality = QUICK_QUALITY_OPTIONS[0]
-                st.session_state.quick_simple_use_reference = False
-                st.session_state.quick_simple_ref_mode = "1 ảnh"
-                st.session_state.quick_simple_mode = DEFAULT_MULTI_API_MODE
-                st.session_state.quick_simple_speed = list(QUICK_SPEED_PRESETS.keys())[0]
-                st.session_state.quick_prompt_clip_refs = []
-                st.session_state.quick_edit_clip_refs = []
-                st.session_state.quick_upscale_clip_refs = []
-                st.session_state.quick_translate_clip_refs = []
-                st.session_state.quick_remix_clip_refs = []
-                st.session_state.quick_universal_clip_refs = []
-                st.success("Đã đưa giao diện về mặc định.")
+            st.button(
+                "⟲ Reset",
+                use_container_width=True,
+                key="btn_quick_clean_defaults",
+                on_click=_reset_quick_studio_defaults,
+            )
+    if st.session_state.pop("_quick_reset_notice", False):
+        st.success("Đã đưa giao diện về mặc định.")
 
     model = suggest_top_model(
         [str(item) for item in st.session_state.get("models", []) if isinstance(item, str)],
@@ -6548,6 +7814,20 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
 
     if operation == "Làm truyện tranh":
         render_story_workflow(base_url, api_key, model)
+        return
+
+    if operation == "Vẽ art game Tu Tiên Cờ":
+        from tutienco_art_workflow import render_tutienco_workflow
+
+        render_tutienco_workflow(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            run_payload_generation=run_payload_generation,
+            timestamp_slug_fn=timestamp_slug,
+            apply_character_detail_note=_apply_character_detail_note,
+        )
+        render_recent_outputs_strip()
         return
 
     if operation == "Tạo ảnh":
@@ -6615,7 +7895,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                         st.session_state.quick_prompt_clip_refs = []
                         clip_refs = []
 
-                if paste_image_button is not None and bool(st.session_state.get("enable_paste_component", False)):
+                if False:  # legacy enable_paste_component removed
                     pasted_clip = paste_image_button("Dán ảnh", key="quick_prompt_paste_button")
                     clip_image = getattr(pasted_clip, "image_data", None)
                     if clip_image is not None:
@@ -6658,6 +7938,14 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                 key="quick_simple_quality",
                 default=quality_default,
             )
+            transparent_bg = st.toggle(
+                "Nền trong suốt PNG",
+                value=bool(st.session_state.get("quick_simple_transparent_bg", False)),
+                key="quick_simple_transparent_bg",
+                help="Bật để AI vẽ nền xanh lá #00FF00 một màu, sau đó app tự xóa nền xanh và lưu PNG RGBA.",
+            )
+            if transparent_bg:
+                st.caption("Dùng cho nhân vật, item, icon, sticker. Tắt nếu cần cảnh nền.")
 
             st.markdown("<div class='nr-card-divider'></div>", unsafe_allow_html=True)
             st.markdown("<div class='nr-card-header'>⚡ API &amp; TỐC ĐỘ</div>", unsafe_allow_html=True)
@@ -6678,7 +7966,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                 with n1:
                     st.number_input(
                         "Timeout (giây)",
-                        min_value=30,
+                        min_value=MIN_API_POST_TIMEOUT_SECONDS,
                         max_value=MAX_API_TIMEOUT_SECONDS,
                         step=10,
                         key="api_request_timeout",
@@ -6759,11 +8047,53 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
         if quality_value:
             payload["quality"] = quality_value
 
+        apply_transparent_background_request(payload, bool(transparent_bg))
+
         if refs:
             if len(refs) == 1:
                 payload["image"] = refs[0]
             else:
                 payload["images"] = refs
+
+        # Đọc các tham số Advanced từ cột phải (CFG / Steps / Detail / Sampler / Seed / Clip Skip / Negative).
+        # Chỉ đẩy vào payload khi user thực sự thay đổi khác mặc định.
+        negative_text = str(st.session_state.get("gen_negative_prompt", "") or "").strip()
+        if negative_text:
+            payload["negative_prompt"] = negative_text
+        try:
+            cfg_val = float(st.session_state.get("gen_cfg_scale", 7.0))
+            if abs(cfg_val - 7.0) > 1e-3:
+                payload["cfg_scale"] = cfg_val
+                payload["guidance_scale"] = cfg_val
+        except Exception:
+            pass
+        try:
+            steps_val = int(st.session_state.get("gen_steps", 40))
+            if steps_val != 40:
+                payload["steps"] = steps_val
+        except Exception:
+            pass
+        try:
+            detail_val = float(st.session_state.get("gen_strength", 0.75))
+            if abs(detail_val - 0.75) > 1e-3:
+                payload["strength"] = detail_val
+        except Exception:
+            pass
+        sampler_val = str(st.session_state.get("gen_sampler", "") or "").strip()
+        if sampler_val:
+            payload["sampler"] = sampler_val
+        seed_text = str(st.session_state.get("gen_seed", "") or "").strip()
+        if seed_text:
+            try:
+                payload["seed"] = int(seed_text)
+            except Exception:
+                payload["seed"] = seed_text
+        try:
+            clip_val = int(st.session_state.get("gen_clip_skip", 1))
+            if clip_val != 1:
+                payload["clip_skip"] = clip_val
+        except Exception:
+            pass
 
         speed_parallel = int(QUICK_SPEED_PRESETS.get(speed_choice, QUICK_SPEED_PRESETS[list(QUICK_SPEED_PRESETS.keys())[0]]))
         st.session_state.multi_api_max_parallel = speed_parallel
@@ -6839,6 +8169,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                 f"<b>Tỷ lệ</b> · {ratio_choice}",
                 f"<b>Phong cách</b> · {style_choice}",
                 f"<b>Chất lượng</b> · {quality_choice}",
+                f"<b>Nền</b> · {'Trong suốt PNG/RGBA' if transparent_bg else 'Tự động'}",
                 f"<b>Tốc độ</b> · {speed_choice}",
             ]
             st.markdown(
@@ -6931,6 +8262,12 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                                 st.image(url, use_container_width=True)
                             else:
                                 st.caption("Không có preview")
+                            alpha_label = transparency_check_label(
+                                entry.get("transparent_check"),
+                                requested=bool(entry.get("transparent_requested")),
+                            )
+                            if alpha_label:
+                                st.caption(alpha_label)
                             entry_id = str(entry.get("id", "")).strip() or f"recent_{recent_outputs.index(entry)}"
                             mini1, mini2 = st.columns([1, 1], gap="small")
                             with mini1:
@@ -6972,9 +8309,15 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                             st.image(image_bytes, use_container_width=True)
                         elif url:
                             st.image(url, use_container_width=True)
+                        alpha_label = transparency_check_label(
+                            selected_output.get("transparent_check"),
+                            requested=bool(selected_output.get("transparent_requested")),
+                        )
+                        if alpha_label:
+                            st.caption(alpha_label)
                         st.code(str(selected_output.get("prompt", "")))
 
-        if bool(st.session_state.get("ui_debug_mode", False)):
+        if True:
             with st.expander("Payload debug", expanded=False):
                 st.json(payload)
 
@@ -7072,7 +8415,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                 default=_normalize_quick_choice(str(st.session_state.get("quick_universal_quality", QUICK_QUALITY_OPTIONS[0])), QUICK_QUALITY_OPTIONS),
             )
 
-        lock1, lock2 = st.columns([1.0, 1.2], gap="small")
+        lock1, lock2, lock3 = st.columns([1.0, 1.1, 1.0], gap="small")
         with lock1:
             lock_identity = st.toggle(
                 "Khóa nhân vật ảnh 1",
@@ -7084,6 +8427,13 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                 "Ưu tiên cảnh ảnh 2",
                 value=bool(st.session_state.get("quick_universal_prioritize_scene", False)),
                 key="quick_universal_prioritize_scene",
+            )
+        with lock3:
+            transparent_bg = st.toggle(
+                "Nền trong suốt PNG",
+                value=bool(st.session_state.get("quick_universal_transparent_bg", False)),
+                key="quick_universal_transparent_bg",
+                help="AI vẽ nền xanh lá #00FF00 rồi app tự xóa xanh thành nền trong suốt.",
             )
 
         with st.expander("Tùy chỉnh nâng cao", expanded=False):
@@ -7188,6 +8538,8 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
         if bool(use_seed):
             payload["seed"] = int(seed_value)
 
+        apply_transparent_background_request(payload, bool(transparent_bg))
+
         if refs:
             if len(refs) == 1:
                 payload["image"] = refs[0]
@@ -7248,7 +8600,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
             with n1:
                 st.number_input(
                     "Timeout request (giây)",
-                    min_value=30,
+                    min_value=MIN_API_POST_TIMEOUT_SECONDS,
                     max_value=MAX_API_TIMEOUT_SECONDS,
                     step=10,
                     key="api_request_timeout",
@@ -7395,7 +8747,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
             with n1:
                 st.number_input(
                     "Timeout request (giây)",
-                    min_value=30,
+                    min_value=MIN_API_POST_TIMEOUT_SECONDS,
                     max_value=MAX_API_TIMEOUT_SECONDS,
                     step=10,
                     key="api_request_timeout",
@@ -7442,7 +8794,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
             )
 
         strength_map = {"Nhẹ": 0.35, "Vừa": 0.65, "Mạnh": 0.9}
-        s1, s2 = st.columns([1.0, 2.2], gap="small")
+        s1, s2, s3 = st.columns([1.0, 1.8, 1.0], gap="small")
         with s1:
             strength_preset = pill_single_select(
                 "Mức chỉnh",
@@ -7458,6 +8810,13 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                 step=0.05,
                 value=float(strength_map[strength_preset]),
                 key="quick_remix_strength_exact",
+            )
+        with s3:
+            transparent_bg = st.toggle(
+                "Nền trong suốt PNG",
+                value=bool(st.session_state.get("quick_remix_transparent_bg", False)),
+                key="quick_remix_transparent_bg",
+                help="AI vẽ nền xanh lá #00FF00 rồi app tự xóa xanh thành PNG nền trong suốt.",
             )
 
         with st.expander("Tùy chỉnh nâng cao", expanded=False):
@@ -7560,6 +8919,8 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
 
         if bool(use_seed):
             payload["seed"] = int(seed_value)
+
+        apply_transparent_background_request(payload, bool(transparent_bg))
 
         if refs:
             if len(refs) == 1:
@@ -7707,6 +9068,12 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
             key="quick_edit_count",
             default=_normalize_quick_choice(str(st.session_state.get("quick_edit_count", "1")), ["1", "2", "4"]),
         )
+        transparent_bg = st.toggle(
+            "Nền trong suốt PNG",
+            value=bool(st.session_state.get("quick_edit_transparent_bg", False)),
+            key="quick_edit_transparent_bg",
+            help="Dùng khi muốn tách nền xanh lá #00FF00 khỏi ảnh và lưu PNG RGBA alpha=0.",
+        )
 
         with st.expander("Chi tiết sửa ảnh", expanded=False):
             strength_value = st.slider("Strength", min_value=0.1, max_value=1.0, step=0.05, value=float(strength_map[preset]), key="quick_edit_strength_exact")
@@ -7728,6 +9095,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
             "n": _edit_count_preview,
             "strength": _edit_strength_preview,
         }
+        apply_transparent_background_request(_edit_payload_preview, bool(transparent_bg))
         with st.expander("📡 Lệnh sẽ gửi (xem trước)", expanded=False):
             render_payload_command_panel(
                 payload=_edit_payload_preview,
@@ -7755,6 +9123,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                         "strength": float(strength_value),
                     }
                     payload.update(parse_json_object(edit_extra_json))
+                    apply_transparent_background_request(payload, bool(transparent_bg))
                 except Exception as ex:
                     st.error(f"JSON bổ sung không hợp lệ: {ex}")
                 else:
@@ -7771,6 +9140,271 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                     else:
                         output_file = f"{st.session_state.studio_output_prefix}_quick_edit_{timestamp_slug()}.png"
                         run_payload_generation(base_url, api_key, payload, "binary", output_file, "Quick sửa ảnh", show_inline_preview=False)
+
+    elif operation == "Phân tích & tách nền":
+        render_workflow_intro(
+            "🧠 Phân tích & tách nền",
+            "Nạp ảnh bất kỳ, app sẽ đọc màu viền/góc ảnh để tự chọn xóa nền xanh lá, xanh biển, hồng hoặc nền trơn rồi xuất PNG RGBA trong suốt.",
+        )
+        analyze_mode_labels = {
+            "auto": "Tự động chọn cách đẹp nhất",
+            "green": "Ưu tiên nền xanh lá #00FF00",
+            "blue": "Ưu tiên nền xanh biển #0000FF",
+            "magenta": "Ưu tiên nền hồng #FF00FF",
+            "solid": "Ưu tiên nền trơn ở 4 góc",
+        }
+        ac1, ac2, ac3 = st.columns([1.15, 1.0, 1.0], gap="small")
+        with ac1:
+            analyze_mode = st.selectbox(
+                "Kiểu phân tích",
+                options=list(analyze_mode_labels.keys()),
+                format_func=lambda key: analyze_mode_labels.get(key, key),
+                key="quick_analyze_bg_mode",
+            )
+        with ac2:
+            analyze_backup_source = st.checkbox(
+                "Backup ảnh gốc",
+                value=True,
+                key="quick_analyze_bg_backup_source",
+                help="Lưu thêm bản ảnh trước xử lý vào outputs/history để có file nền màu/raw đối chiếu.",
+            )
+        with ac3:
+            analyze_show_details = st.checkbox(
+                "Hiện phân tích màu",
+                value=True,
+                key="quick_analyze_bg_show_details",
+            )
+
+        analyze_input = st.text_area(
+            "Dán ảnh hoặc data:image cần phân tích/tách nền",
+            key="quick_analyze_bg_input",
+            height=110,
+            placeholder="Dán data:image/base64 hoặc dùng upload/clipboard bên dưới.",
+        )
+        prompt_refs = parse_pasted_image_refs(analyze_input or "")
+        analyze_clip_refs: list[str] = [item for item in st.session_state.get("quick_analyze_bg_clip_refs", []) if isinstance(item, str)]
+        analyze_upload = st.file_uploader(
+            "Kéo/thả ảnh cần phân tích nền",
+            type=["png", "jpg", "jpeg", "webp", "bmp"],
+            accept_multiple_files=True,
+            key="quick_analyze_bg_upload",
+        )
+
+        bgc1, bgc2, bgc3 = st.columns([1.2, 0.8, 2.0], gap="small")
+        with bgc1:
+            if st.button("📋 Clipboard", key="btn_quick_analyze_bg_clipboard", use_container_width=True):
+                data_url, err = grab_clipboard_image_data_url()
+                if data_url:
+                    analyze_clip_refs = unique_list(analyze_clip_refs + [data_url])
+                    st.session_state.quick_analyze_bg_clip_refs = analyze_clip_refs
+                    st.success("Đã nhận ảnh clipboard.")
+                else:
+                    st.warning(err)
+        with bgc2:
+            if st.button("🧹 Xóa", key="btn_clear_quick_analyze_bg_clip", use_container_width=True):
+                st.session_state.quick_analyze_bg_clip_refs = []
+                analyze_clip_refs = []
+        with bgc3:
+            st.caption("Tự động tốt nhất với ảnh có nền màu phẳng/chroma hoặc nền trơn quanh viền. Nếu biết chắc màu nền, chọn chế độ ưu tiên để xử lý mạnh hơn.")
+
+        refs = unique_list(prompt_refs + _uploaded_to_refs(analyze_upload) + analyze_clip_refs)
+        _render_small_refs("Ảnh cần phân tích", refs)
+
+        if st.button("🧠 Phân tích & tách nền → PNG trong suốt", type="primary", use_container_width=True, key="btn_quick_analyze_bg_submit"):
+            if not refs:
+                st.error("Hãy upload/dán ít nhất 1 ảnh cần tách nền.")
+            else:
+                cols = st.columns(min(3, len(refs)))
+                for idx, ref in enumerate(refs, start=1):
+                    image_bytes = decode_data_image_ref(ref)
+                    if not image_bytes:
+                        st.warning(f"Ảnh #{idx}: không đọc được dữ liệu ảnh.")
+                        continue
+                    processed, analysis = auto_remove_analyzed_background(image_bytes, preferred=str(analyze_mode))
+                    check = analysis.get("after_check") if isinstance(analysis.get("after_check"), dict) else inspect_image_transparency(processed)
+                    output_file = build_daily_output_path(
+                        f"analyzed_bg_removed_{timestamp_slug()}_{idx}.png",
+                        "analyze_bg_remove",
+                    )
+                    saved = save_image(processed, output_file)
+                    source_saved = ""
+                    if analyze_backup_source:
+                        source_ext = ".png"
+                        ref_head = str(ref).split(",", 1)[0].lower()
+                        if "image/jpeg" in ref_head or "image/jpg" in ref_head:
+                            source_ext = ".jpg"
+                        elif "image/webp" in ref_head:
+                            source_ext = ".webp"
+                        elif "image/bmp" in ref_head:
+                            source_ext = ".bmp"
+                        source_file = build_daily_output_path(
+                            f"analyzed_bg_source_{timestamp_slug()}_{idx}{source_ext}",
+                            "analyze_bg_source",
+                            fallback_ext=source_ext,
+                        )
+                        source_saved = str(save_image(image_bytes, source_file))
+
+                    history_time = datetime.now().isoformat(timespec="seconds")
+                    method_label = str(analysis.get("method_label", "auto background remover"))
+                    add_recent_output(
+                        {
+                            "time": history_time,
+                            "model": "auto-background-analyzer",
+                            "prompt": f"Phân tích & tách nền: {method_label}",
+                            "kind": "binary",
+                            "local_path": str(saved),
+                            "url": "",
+                            "image_bytes": b"",
+                            "transparent_check": check,
+                            "transparent_requested": True,
+                            "background_analysis": analysis,
+                        }
+                    )
+                    append_history(
+                        {
+                            "time": history_time,
+                            "model": "auto-background-analyzer",
+                            "prompt": f"Phân tích & tách nền: {method_label}",
+                            "response_format": "binary",
+                            "result_kind": "binary",
+                            "local_path": str(saved),
+                            "source_backup_path": source_saved,
+                        }
+                    )
+                    with cols[(idx - 1) % len(cols)]:
+                        st.image(processed, caption=f"Đã tách nền #{idx}", use_container_width=True)
+                        st.caption(str(analysis.get("reason", "")))
+                        render_transparency_check(check, requested=True)
+                        if source_saved:
+                            st.caption(f"Backup gốc: `{source_saved}`")
+                        if analyze_show_details:
+                            compact_analysis = {
+                                "method": analysis.get("method_label"),
+                                "corner_hex": analysis.get("corner_hex"),
+                                "edge_hex": analysis.get("edge_hex"),
+                                "corner_spread": analysis.get("corner_spread"),
+                                "edge_solid_ratio": analysis.get("edge_solid_ratio"),
+                                "edge_green_ratio": analysis.get("edge_green_ratio"),
+                                "edge_blue_ratio": analysis.get("edge_blue_ratio"),
+                                "edge_magenta_ratio": analysis.get("edge_magenta_ratio"),
+                                "attempts": analysis.get("attempts", []),
+                            }
+                            with st.expander(f"Chi tiết phân tích #{idx}", expanded=False):
+                                st.json(compact_analysis)
+                        st.download_button(
+                            f"⬇ Tải PNG #{idx}",
+                            data=processed,
+                            file_name=Path(saved).name,
+                            mime="image/png",
+                            key=f"download_analyzed_bg_removed_{idx}_{Path(saved).stem}",
+                            use_container_width=True,
+                        )
+                st.success("Đã phân tích và tách nền xong.")
+
+    elif operation in {"Xóa nền xanh", "Xóa nền chroma"}:
+        render_workflow_intro(
+            "🟦 Xóa nền chroma",
+            "Nạp ảnh có nền xanh dương chroma key (#0000FF), app sẽ chuyển vùng xanh dương nối từ viền ảnh thành nền trong suốt PNG. Có thể đổi sang xanh lá để xử lý file cũ.",
+        )
+        chroma_color_choice = st.selectbox(
+            "Màu nền cần xóa",
+            options=["Xanh dương #0000FF", "Xanh lá #00FF00"],
+            index=0,
+            key="quick_chroma_remove_color",
+        )
+        remove_blue = chroma_color_choice.startswith("Xanh dương")
+        green_input = st.text_area(
+            "Dán ảnh hoặc data:image cần xóa nền chroma",
+            key="quick_green_remove_input",
+            height=110,
+            placeholder="Dán data:image/base64 hoặc dùng upload/clipboard bên dưới.",
+        )
+        prompt_refs = parse_pasted_image_refs(green_input or "")
+        green_clip_refs: list[str] = [item for item in st.session_state.get("quick_green_clip_refs", []) if isinstance(item, str)]
+        green_upload = st.file_uploader(
+            "Kéo/thả ảnh nền chroma",
+            type=["png", "jpg", "jpeg", "webp", "bmp"],
+            accept_multiple_files=True,
+            key="quick_green_remove_upload",
+        )
+
+        g1, g2, g3 = st.columns([1.2, 0.8, 2.0], gap="small")
+        with g1:
+            if st.button("📋 Clipboard", key="btn_quick_green_clipboard", use_container_width=True):
+                data_url, err = grab_clipboard_image_data_url()
+                if data_url:
+                    green_clip_refs = unique_list(green_clip_refs + [data_url])
+                    st.session_state.quick_green_clip_refs = green_clip_refs
+                    st.success("Đã nhận ảnh clipboard.")
+                else:
+                    st.warning(err)
+        with g2:
+            if st.button("🧹 Xóa", key="btn_clear_quick_green_clip", use_container_width=True):
+                st.session_state.quick_green_clip_refs = []
+                green_clip_refs = []
+        with g3:
+            st.caption("Tốt nhất: nền xanh dương phẳng #0000FF, không bóng đổ/gradient. Nếu xử lý file cũ thì chọn xanh lá #00FF00.")
+
+        refs = unique_list(prompt_refs + _uploaded_to_refs(green_upload) + green_clip_refs)
+        _render_small_refs("Ảnh nền chroma", refs)
+
+        if st.button("🟦 Xóa nền chroma → PNG trong suốt", type="primary", use_container_width=True, key="btn_quick_green_remove_submit"):
+            if not refs:
+                st.error("Hãy upload/dán ít nhất 1 ảnh nền chroma.")
+            else:
+                cols = st.columns(min(3, len(refs)))
+                for idx, ref in enumerate(refs, start=1):
+                    image_bytes = decode_data_image_ref(ref)
+                    if not image_bytes:
+                        st.warning(f"Ảnh #{idx}: không đọc được dữ liệu ảnh.")
+                        continue
+                    processed = ensure_transparent_png_rgba_bytes(
+                        image_bytes,
+                        remove_blue_screen=remove_blue,
+                        remove_green_screen=not remove_blue,
+                    )
+                    check = inspect_image_transparency(processed)
+                    output_file = build_daily_output_path(
+                        f"outputs/chroma_removed_{timestamp_slug()}_{idx}.png",
+                        "chroma_remove",
+                    )
+                    saved = save_image(processed, output_file)
+                    history_time = datetime.now().isoformat(timespec="seconds")
+                    add_recent_output(
+                        {
+                            "time": history_time,
+                            "model": "chroma-screen-remover",
+                            "prompt": f"Xóa nền chroma key {BLUE_SCREEN_HEX if remove_blue else GREEN_SCREEN_HEX}",
+                            "kind": "binary",
+                            "local_path": str(saved),
+                            "url": "",
+                            "image_bytes": b"",
+                            "transparent_check": check,
+                            "transparent_requested": True,
+                        }
+                    )
+                    append_history(
+                        {
+                            "time": history_time,
+                            "model": "chroma-screen-remover",
+                            "prompt": f"Xóa nền chroma key {BLUE_SCREEN_HEX if remove_blue else GREEN_SCREEN_HEX}",
+                            "response_format": "binary",
+                            "result_kind": "binary",
+                            "local_path": str(saved),
+                        }
+                    )
+                    with cols[(idx - 1) % len(cols)]:
+                        st.image(processed, caption=f"Đã xóa nền chroma #{idx}", use_container_width=True)
+                        render_transparency_check(check, requested=True)
+                        st.download_button(
+                            f"⬇ Tải PNG #{idx}",
+                            data=processed,
+                            file_name=Path(saved).name,
+                            mime="image/png",
+                            key=f"download_chroma_removed_{idx}_{timestamp_slug()}",
+                            use_container_width=True,
+                        )
+                st.success("Đã xử lý xong nền chroma.")
 
     elif operation == "Nâng cấp chất lượng":
         render_workflow_intro(
@@ -7937,7 +9571,7 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
         with t2:
             tgt_lang = st.selectbox("Đích", options=TRANSLATE_LANG_OPTIONS, index=0, key="quick_translate_tgt")
         with t3:
-            tone = st.selectbox("Ưu tiên", options=TRANSLATE_TONE_OPTIONS, key="quick_translate_tone")
+            tone = st.selectbox("Ưu tiên", options=["Giữ nguyên tuyệt đối bố cục", "Ưu tiên đọc rõ", "Ưu tiên thẩm mỹ"], key="quick_translate_tone")
 
         note = st.text_input("Ghi chú", value="Giữ nguyên font và bố cục", key="quick_translate_note")
         translate_prompt = f"{build_translate_prompt(src_lang, tgt_lang, note)} Ưu tiên: {tone.lower()}."
@@ -7998,6 +9632,139 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
                     else:
                         output_file = f"{st.session_state.studio_output_prefix}_quick_translate_{timestamp_slug()}.png"
                         run_payload_generation(base_url, api_key, payload, "binary", output_file, "Quick dịch ảnh", show_inline_preview=False)
+
+    elif operation == "Vẽ asset game (không nền)":
+        render_workflow_intro(
+            "🎮 Vẽ asset game không nền",
+            "Tạo item, danh hiệu, huy hiệu, nhân vật, vũ khí hoặc icon kỹ năng dạng PNG tách nền để dùng cho game/UI.",
+        )
+
+        g1, g2, g3 = st.columns([1.1, 1.1, 0.8], gap="medium")
+        with g1:
+            asset_type = st.selectbox(
+                "Loại asset",
+                options=["Item", "Danh hiệu / Huy hiệu", "Nhân vật", "Icon kỹ năng", "Vũ khí / Trang bị", "Khung avatar", "Tiền tệ / Đá quý"],
+                key="quick_game_asset_type",
+            )
+        with g2:
+            game_style = st.selectbox(
+                "Phong cách game",
+                options=["Fantasy RPG", "Anime game", "Chibi", "Pixel art", "Cyberpunk", "MOBA", "Mobile casual", "Realistic icon", "UI badge cao cấp"],
+                key="quick_game_asset_style",
+            )
+        with g3:
+            game_count = st.selectbox("Số ảnh", options=[1, 2, 4, 8], index=0, key="quick_game_asset_count")
+
+        desc = st.text_area(
+            "Mô tả asset cần vẽ",
+            height=120,
+            key="quick_game_asset_desc",
+            placeholder="Ví dụ: kiếm lửa cấp huyền thoại, danh hiệu Chiến Thần, nhân vật pháp sư nữ full body...",
+        )
+
+        c1, c2, c3, c4 = st.columns(4, gap="small")
+        with c1:
+            rarity = st.selectbox("Độ hiếm", options=["Không chọn", "Common", "Rare", "Epic", "Legendary", "Mythic"], key="quick_game_asset_rarity")
+        with c2:
+            ratio = st.selectbox("Tỷ lệ", options=["1:1", "4:5", "9:16", "16:9"], index=0, key="quick_game_asset_ratio")
+        with c3:
+            transparent_bg = st.checkbox("Nền trong suốt PNG", value=True, key="quick_game_asset_transparent")
+        with c4:
+            add_glow = st.checkbox("Viền/glow rõ", value=True, key="quick_game_asset_glow")
+
+        force_api_background = st.checkbox(
+            "Tự xóa nền xanh dương sau khi vẽ",
+            value=True,
+            key="quick_game_asset_force_api_background",
+            help="AI vẽ nền xanh dương #0000FF, app tự chuyển vùng xanh dương thành alpha=0. Tránh xoá nhầm chi tiết xanh lá/ngọc.",
+        )
+
+        title_text = ""
+        if asset_type == "Danh hiệu / Huy hiệu":
+            title_text = st.text_input("Chữ trên danh hiệu (nếu cần)", key="quick_game_asset_title_text", placeholder="Ví dụ: CHIẾN THẦN")
+
+        negative_game = st.text_area(
+            "Negative prompt",
+            value="background, scenery, room, landscape, floor, wall, watermark, logo sai, chữ lỗi, extra object, blurry, low quality, cropped, cut off",
+            height=78,
+            key="quick_game_asset_negative",
+        )
+
+        asset_rules = [
+            "game asset, professional game UI asset, centered composition, clean silhouette, isolated subject",
+            "clean asset cutout composition, no scenery, no environment, no floor shadow outside asset",
+            "sharp edges, readable shape, high detail, production-ready, marketplace game icon quality",
+        ]
+        if transparent_bg:
+            asset_rules.append(BLUE_SCREEN_PROMPT_RULE)
+        if add_glow:
+            asset_rules.append("clean outline, subtle rim light, polished glow suitable for game inventory UI")
+        if rarity != "Không chọn":
+            asset_rules.append(f"rarity color theme: {rarity}")
+        if asset_type == "Danh hiệu / Huy hiệu":
+            asset_rules.append("game title badge/nameplate, decorative frame, readable centered typography")
+            if title_text.strip():
+                asset_rules.append(f'exact title text: "{title_text.strip()}"')
+        elif asset_type == "Nhân vật":
+            asset_rules.append("full body game character, complete body visible, character concept art, clean outline")
+        elif asset_type == "Icon kỹ năng":
+            asset_rules.append("square skill icon, strong symbol readability at small size, circular energy effects contained inside icon")
+
+        final_prompt = "\n".join(
+            part for part in [
+                f"Loại asset: {asset_type}",
+                f"Phong cách: {game_style}",
+                f"Mô tả: {_normalize_prompt_text(desc)}" if _normalize_prompt_text(desc) else "",
+                "Yêu cầu bắt buộc: " + "; ".join(asset_rules),
+            ] if part
+        )
+        final_prompt = _apply_character_detail_note(final_prompt)
+
+        payload_preview: dict[str, Any] = {
+            "model": model,
+            "prompt": final_prompt,
+            "n": int(game_count),
+            "aspect_ratio": ratio,
+            "output_format": "png",
+        }
+        if negative_game.strip():
+            payload_preview["negative_prompt"] = negative_game.strip()
+        if transparent_bg:
+            apply_transparent_background_request(payload_preview, bool(force_api_background))
+
+        with st.expander("📡 Lệnh sẽ gửi (xem trước)", expanded=False):
+            render_payload_command_panel(
+                payload=payload_preview,
+                workflow_label="Vẽ asset game không nền",
+                count=int(game_count),
+                ref_count=0,
+                mode_choice=str(st.session_state.get("multi_api_mode", DEFAULT_MULTI_API_MODE)),
+                speed_choice=str(st.session_state.get("quick_simple_speed", list(QUICK_SPEED_PRESETS.keys())[0])),
+                key_pool_count=len(parse_api_keys_pool(str(st.session_state.get("api_keys_pool_text", "") or st.session_state.get("api_key", "")), st.session_state.api_key)),
+                user_command=final_prompt,
+                extra_rows=[("Loại asset", asset_type), ("Style", game_style), ("Tỷ lệ", ratio), ("Nền", "Xanh dương → xóa nền" if transparent_bg else "Tự động")],
+            )
+
+        if st.button("🎮 Vẽ asset game", type="primary", use_container_width=True, key="btn_quick_game_asset_submit"):
+            if not _normalize_prompt_text(desc) and asset_type != "Danh hiệu / Huy hiệu":
+                st.error("Hãy nhập mô tả asset cần vẽ.")
+            elif asset_type == "Danh hiệu / Huy hiệu" and not (_normalize_prompt_text(desc) or title_text.strip()):
+                st.error("Hãy nhập mô tả hoặc chữ trên danh hiệu.")
+            else:
+                payload = dict(payload_preview)
+                batch_commands = _get_batch_commands("quick")
+                if batch_commands:
+                    _run_command_batch(
+                        base_payload=payload,
+                        base_prompt=final_prompt,
+                        commands=batch_commands,
+                        output_prefix="quick_game_asset_cmd",
+                        workflow_label="Quick asset game",
+                        refs_available=False,
+                    )
+                else:
+                    output_file = f"{st.session_state.studio_output_prefix}_quick_game_asset_{timestamp_slug()}.png"
+                    run_payload_generation(base_url, api_key, payload, "binary", output_file, "Quick asset game", show_inline_preview=False)
 
     else:
         render_workflow_intro(
@@ -8285,217 +10052,6 @@ def page_generate_quick(base_url: str, api_key: str, compact_mode: bool) -> None
 
 
 
-def page_generate(base_url: str, api_key: str, workflow_override: str | None = None) -> None:
-    compact_mode = st.session_state.ui_compact_mode
-
-    if "studio_response_format" not in st.session_state:
-        st.session_state.studio_response_format = "binary"
-    if "studio_count" not in st.session_state:
-        st.session_state.studio_count = 1
-    if "studio_output_prefix" not in st.session_state:
-        st.session_state.studio_output_prefix = "outputs/result"
-    if "draw_active_flow" not in st.session_state:
-        st.session_state.draw_active_flow = WORKFLOW_TABS[0]
-    if not bool(st.session_state.get("ui_debug_mode", False)) and not workflow_override:
-        page_generate_quick(base_url, api_key, compact_mode)
-        return
-
-    st.subheader("Xưởng ảnh")
-
-    model = suggest_top_model(
-        [str(item) for item in st.session_state.get("models", []) if isinstance(item, str)],
-        str(st.session_state.manual_model),
-    )
-    st.session_state.manual_model = model
-    quick_models = get_quick_model_choices()
-    if st.session_state.get("studio_top_model") not in quick_models:
-        st.session_state.studio_top_model = suggest_top_model(
-            [str(item) for item in st.session_state.get("models", []) if isinstance(item, str)],
-            st.session_state.manual_model,
-        )
-
-    top_cols = [2.0, 1.4, 1.1] if compact_mode else [2.1, 1.5, 1.2]
-    top_gap = "small" if compact_mode else "medium"
-    top1, top3, top5 = st.columns(top_cols, gap=top_gap)
-    with top1:
-        selected_top = pill_single_select(
-            "Model đỉnh (1 chạm)",
-            options=quick_models,
-            key="studio_top_model",
-            default=st.session_state.studio_top_model,
-        )
-        if selected_top and selected_top != st.session_state.manual_model:
-            st.session_state.manual_model = selected_top
-            model = selected_top
-    with top3:
-        st.selectbox("Preset nhanh", options=list(WORKFLOW_PRESETS.keys()), key="gen_workflow_preset")
-    with top5:
-        ab_l, ab_r = st.columns(2, gap="small")
-        with ab_l:
-            if st.button("Nạp model", use_container_width=True, key="btn_studio_load_models"):
-                ok_load, load_msg = load_models_into_state(base_url, api_key)
-                if ok_load:
-                    st.session_state.studio_top_model = suggest_top_model(st.session_state.models, st.session_state.manual_model)
-                    st.success(load_msg)
-                else:
-                    st.error(load_msg)
-        with ab_r:
-            if st.button("Áp preset", use_container_width=True, key="btn_studio_apply_preset"):
-                apply_workflow_preset(st.session_state.gen_workflow_preset)
-                st.session_state.create_count_ui = int(st.session_state.quick_count)
-                st.session_state.create_response_format_ui = str(st.session_state.quick_response_format)
-                st.success("Đã áp dụng preset")
-
-    if st.button("↺ Mặc định vẽ thường", key="btn_studio_everyday_defaults"):
-        apply_everyday_studio_defaults()
-        st.session_state.studio_top_model = st.session_state.manual_model
-        st.success("Đã đưa về cấu hình vẽ thường")
-
-    model_total = len(st.session_state.models)
-    top_model = suggest_top_model(
-        [str(item) for item in st.session_state.get("models", []) if isinstance(item, str)],
-        st.session_state.manual_model,
-    )
-    st.caption(
-        f"Đang dùng: {st.session_state.manual_model} • Đỉnh gợi ý: {top_model} • Đã nạp {model_total} model"
-    )
-
-    if bool(st.session_state.get("ui_debug_mode", False)):
-        with st.expander("Model nâng cao", expanded=False):
-            adv1, adv2 = st.columns(2)
-            with adv1:
-                if st.button("Đặt model đỉnh", use_container_width=True, key="btn_studio_pick_top_model"):
-                    st.session_state.manual_model = suggest_top_model(
-                        [str(item) for item in st.session_state.get("models", []) if isinstance(item, str)],
-                        st.session_state.manual_model,
-                    )
-                    st.session_state.studio_top_model = st.session_state.manual_model
-                    st.success(f"Đang dùng model: {st.session_state.manual_model}")
-            with adv2:
-                if st.button("Nạp model + đặt đỉnh", use_container_width=True, key="btn_studio_load_and_pick_top"):
-                    ok_load, load_msg = load_models_into_state(base_url, api_key, enforce_top_model=True)
-                    if ok_load:
-                        st.session_state.studio_top_model = st.session_state.manual_model
-                        st.success(load_msg)
-                    else:
-                        st.error(load_msg)
-            model = selected_model_widget("studio")
-
-    if workflow_override:
-        active_flow = workflow_override
-        st.info(f"Đang ở trang riêng: **{workflow_override}**")
-    else:
-        active_flow = pill_single_select(
-            "Luồng thao tác",
-            options=WORKFLOW_TABS,
-            key="draw_active_flow",
-            default=st.session_state.draw_active_flow,
-        )
-
-    if active_flow == "Tạo ảnh":
-        render_create_workflow(base_url, api_key, model, compact_mode)
-    elif active_flow == "Sửa ảnh":
-        render_edit_workflow(base_url, api_key, model, compact_mode)
-    elif active_flow == "Ghép ảnh":
-        render_compose_workflow(base_url, api_key, model, compact_mode)
-    elif active_flow == "Dịch ảnh":
-        render_translate_workflow(base_url, api_key, model, compact_mode)
-    else:
-        render_story_workflow(base_url, api_key, model)
-
-    render_recent_outputs_strip()
-
-    with st.expander("Thiết lập chung", expanded=False):
-        is_debug_mode = bool(st.session_state.get("ui_debug_mode", False))
-        if is_debug_mode:
-            common_cols = [1.05, 0.9, 1.4, 1.1] if compact_mode else [1.08, 0.92, 1.46, 1.14]
-            common_gap = "small" if compact_mode else "medium"
-            common1, common2, common3, common4 = st.columns(common_cols, gap=common_gap)
-        else:
-            common_cols = [1.2, 1.0, 1.1] if compact_mode else [1.26, 1.04, 1.14]
-            common_gap = "small" if compact_mode else "medium"
-            common1, common2, common4 = st.columns(common_cols, gap=common_gap)
-        with common1:
-            response_format_widget("Định dạng phản hồi", key="studio_response_format", index=0)
-        with common2:
-            st.number_input("Số lượng ảnh", min_value=1, max_value=60, step=1, key="studio_count")
-        if is_debug_mode:
-            with common3:
-                st.text_input("Tiền tố file lưu", key="studio_output_prefix")
-        with common4:
-            st.toggle("Lưu ảnh vào máy", key="auto_save_outputs")
-
-        mode_gap = "small" if compact_mode else "medium"
-        mode1, mode2 = st.columns([1.25, 1.0], gap=mode_gap)
-        with mode1:
-            st.selectbox("Chế độ gọi API", options=MULTI_API_MODES, key="multi_api_mode")
-        with mode2:
-            st.number_input(
-                "Luồng song song tối đa",
-                min_value=1,
-                max_value=MAX_PARALLEL_WORKERS,
-                step=1,
-                key="multi_api_max_parallel",
-            )
-
-        timeout1, timeout2, timeout3 = st.columns([1.0, 1.0, 1.15], gap=mode_gap)
-        with timeout1:
-            st.number_input(
-                "Timeout request (giây)",
-                min_value=30,
-                max_value=MAX_API_TIMEOUT_SECONDS,
-                step=10,
-                key="api_request_timeout",
-            )
-        with timeout2:
-            st.number_input(
-                "Retry khi timeout/lỗi tạm",
-                min_value=0,
-                max_value=MAX_IMAGE_RETRY_COUNT,
-                step=1,
-                key="image_retry_count",
-            )
-        with timeout3:
-            st.number_input(
-                "Backoff retry cơ bản (giây)",
-                min_value=0.2,
-                max_value=10.0,
-                step=0.1,
-                key="image_retry_backoff",
-            )
-        st.caption("Gợi ý ổn định: timeout 300-420s, retry 1-2, backoff 1.2-2.0s.")
-
-        if st.session_state.multi_api_mode != MODE_SINGLE_API:
-            pool = parse_api_keys_pool(
-                str(st.session_state.get("api_keys_pool_text", "") or st.session_state.get("api_key", "")),
-                st.session_state.api_key,
-            )
-            preview_count = max(1, int(st.session_state.get("studio_count", 1)))
-            mode_value = str(st.session_state.get("multi_api_mode", DEFAULT_MULTI_API_MODE))
-            can_split = should_split_batch_requests(mode_value, preview_count, len(pool))
-            if can_split:
-                preview_workers = resolve_parallel_workers(
-                    mode=mode_value,
-                    requested_count=preview_count,
-                    key_pool_count=len(pool),
-                    max_parallel=int(st.session_state.get("multi_api_max_parallel", 1)),
-                )
-                st.caption(
-                    f"Đã nhận {len(pool)} key • batch {preview_count} ảnh • chạy tối đa {preview_workers} luồng."
-                )
-            else:
-                st.caption(
-                    f"Chế độ `{mode_value}` hiện chưa đủ điều kiện tách batch, hệ thống sẽ fallback về 1 request thường."
-                )
-            if st.button("⚙️ Mở Cài đặt API key", key="btn_open_config_from_studio_keys", use_container_width=False):
-                navigate_to_page(PAGE_CONFIG)
-        st.markdown(
-            "<div class='compact-note'>Bạn có thể tắt lưu máy, tạo xong chỉ xem thumbnail rồi chọn ảnh cần tải xuống.</div>",
-            unsafe_allow_html=True,
-        )
-
-
-
 def page_playground(base_url: str, api_key: str) -> None:
     st.subheader("Sân chơi API")
     st.write("Gửi payload thô để kiểm thử tham số đặc thù của từng nhà cung cấp.")
@@ -8552,21 +10108,54 @@ def page_gallery() -> None:
     st.subheader("Thư viện ảnh")
     compact_mode = bool(st.session_state.get("ui_compact_mode", True))
     history = load_history(limit=300)
-    c1, c2, c3 = st.columns([2, 1.2, 0.9])
-    with c1:
-        keyword = st.text_input("Lọc theo model hoặc prompt", value="", placeholder="ví dụ: gpt-5.4 hoặc neon city")
-    with c2:
+
+    all_models = sorted({str(item.get("model", "")) for item in history if str(item.get("model", "")).strip()})
+
+    f1, f2, f3, f4 = st.columns([2.2, 1.0, 1.0, 1.0])
+    with f1:
+        keyword = st.text_input(
+            "Lọc theo model hoặc prompt",
+            value="",
+            placeholder="ví dụ: gpt-5.4 hoặc neon city",
+            key="gallery_keyword",
+        )
+    with f2:
         day_options = ["Tất cả"] + sorted(
             {str(item.get("time", ""))[:10] for item in history if str(item.get("time", ""))},
             reverse=True,
         )
-        selected_day = st.selectbox("Ngày", options=day_options, index=0)
-    with c3:
-        if st.button("🗑 Xóa lịch sử", use_container_width=True):
+        selected_day = st.selectbox("Ngày", options=day_options, index=0, key="gallery_day")
+    with f3:
+        model_options = ["Tất cả"] + all_models
+        selected_model = st.selectbox(
+            "Model", options=model_options, index=0, key="gallery_model_filter",
+            format_func=lambda v: v if v == "Tất cả" else (v.split("/")[-1] if "/" in v else v),
+        )
+    with f4:
+        sort_options = ["Mới nhất trước", "Cũ nhất trước"]
+        sort_choice = st.selectbox("Sắp xếp", options=sort_options, index=0, key="gallery_sort")
+
+    a1, a2, a3 = st.columns([1, 1, 1])
+    with a1:
+        if st.button("📂 Mở thư mục", use_container_width=True, key="btn_gallery_open_folder"):
+            output_dir = Path("outputs/history")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                if sys.platform.startswith("win"):
+                    os.startfile(str(output_dir))  # type: ignore[attr-defined]
+                else:
+                    subprocess.Popen(["xdg-open", str(output_dir)])
+                st.toast(f"Đã mở: {output_dir.resolve()}")
+            except Exception as ex:
+                st.error(f"Không mở được thư mục: {ex}")
+    with a2:
+        if st.button("🗑 Xóa lịch sử", use_container_width=True, key="btn_gallery_clear_history"):
             if HISTORY_FILE.exists():
                 HISTORY_FILE.unlink()
-            st.success("Đã xóa lịch sử")
+            st.success("Đã xóa lịch sử (file ảnh trong outputs/ vẫn còn).")
             st.rerun()
+    with a3:
+        prepare_zip_btn = st.button("📦 Tạo file ZIP từ kết quả lọc", use_container_width=True, key="btn_gallery_zip")
 
     if keyword.strip():
         term = keyword.strip().lower()
@@ -8574,6 +10163,46 @@ def page_gallery() -> None:
 
     if selected_day != "Tất cả":
         history = [item for item in history if str(item.get("time", "")).startswith(selected_day)]
+
+    if selected_model != "Tất cả":
+        history = [item for item in history if str(item.get("model", "")) == selected_model]
+
+    if sort_choice == "Cũ nhất trước":
+        history = sorted(history, key=lambda x: str(x.get("time", "")))
+    else:
+        history = sorted(history, key=lambda x: str(x.get("time", "")), reverse=True)
+
+    if prepare_zip_btn:
+        try:
+            import io as _io, zipfile as _zip
+            buf = _io.BytesIO()
+            seen: set[str] = set()
+            count = 0
+            with _zip.ZipFile(buf, "w", compression=_zip.ZIP_DEFLATED) as zf:
+                for item in history:
+                    p = Path(str(item.get("local_path", "")))
+                    if not p.exists() or str(p) in seen:
+                        continue
+                    seen.add(str(p))
+                    arcname = f"{str(item.get('time', ''))[:10]}/{p.name}"
+                    try:
+                        zf.write(p, arcname)
+                        count += 1
+                    except Exception:
+                        continue
+                    if count >= 800:  # safety cap
+                        break
+            buf.seek(0)
+            st.download_button(
+                f"⬇️ Tải xuống ZIP ({count} ảnh)",
+                data=buf.getvalue(),
+                file_name=f"wahu_gallery_{timestamp_slug()}.zip",
+                mime="application/zip",
+                key="btn_gallery_zip_dl",
+                use_container_width=True,
+            )
+        except Exception as ex:
+            st.error(f"Không tạo được ZIP: {ex}")
 
     st.caption(f"Tổng bản ghi hiển thị: {len(history)}")
     if not history:
@@ -8610,22 +10239,45 @@ def page_gallery() -> None:
             grouped.setdefault(day, []).append(item)
 
         for day in sorted(grouped.keys(), reverse=True):
-            st.markdown(f"##### {day}")
+            day_items = grouped[day][:24]
+            day_total = len(grouped[day])
+            day_label = f"##### {day}  ({day_total} ảnh)"
+            st.markdown(day_label)
             day_cols = 8 if compact_mode else 6
             thumb_width = 118 if compact_mode else 140
             cols = st.columns(day_cols)
-            for idx, item in enumerate(grouped[day][:24]):
+            for idx, item in enumerate(day_items):
                 path = Path(str(item.get("local_path", "")))
                 if not path.exists():
                     continue
                 with cols[idx % day_cols]:
                     st.image(str(path), width=thumb_width)
-                    st.caption(f"{item.get('model', '')} • {item.get('time', '')}")
+                    try:
+                        size_kb = path.stat().st_size / 1024
+                        size_label = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+                    except Exception:
+                        size_label = ""
+                    caption = f"{item.get('model', '')} • {item.get('time', '')}"
+                    if size_label:
+                        caption = f"{caption} • {size_label}"
+                    st.caption(caption)
+                    try:
+                        with path.open("rb") as fh:
+                            st.download_button(
+                                "Tải",
+                                data=fh.read(),
+                                file_name=path.name,
+                                mime="image/png",
+                                use_container_width=True,
+                                key=f"dl_gallery_{day}_{idx}",
+                            )
+                    except Exception:
+                        pass
 
 
 def page_advanced_config(base_url: str, api_key: str) -> None:
     st.subheader("Cài đặt")
-    tabs = st.tabs(["Kết nối", "Sân chơi API"])
+    tabs = st.tabs(["Kết nối", "Sân chơi API", "Tiện ích"])
 
     with tabs[0]:
         if "config_base_url" not in st.session_state:
@@ -8690,15 +10342,192 @@ def page_advanced_config(base_url: str, api_key: str) -> None:
     with tabs[1]:
         page_playground(base_url, api_key)
 
+    with tabs[2]:
+        st.markdown("### Tiện ích Wahu Image Studio")
+
+        # ----- System info -----
+        try:
+            import platform as _plat
+            import shutil as _sh
+            outputs_dir = Path("outputs")
+            outputs_size = 0
+            outputs_files = 0
+            if outputs_dir.exists():
+                for p in outputs_dir.rglob("*"):
+                    if p.is_file():
+                        outputs_files += 1
+                        try:
+                            outputs_size += p.stat().st_size
+                        except Exception:
+                            continue
+            try:
+                disk = _sh.disk_usage(str(Path.cwd()))
+                disk_free_gb = disk.free / (1024 ** 3)
+                disk_total_gb = disk.total / (1024 ** 3)
+                disk_used_pct = int(round((disk.total - disk.free) / max(1, disk.total) * 100))
+            except Exception:
+                disk_free_gb = 0.0
+                disk_total_gb = 0.0
+                disk_used_pct = 0
+
+            si1, si2, si3, si4 = st.columns(4)
+            with si1:
+                st.metric("Hệ điều hành", f"{_plat.system()} {_plat.release()}")
+            with si2:
+                st.metric("Python", _plat.python_version())
+            with si3:
+                if outputs_size >= 1024 ** 3:
+                    label = f"{outputs_size / (1024 ** 3):.2f} GB"
+                else:
+                    label = f"{outputs_size / (1024 ** 2):.0f} MB"
+                st.metric("Outputs", label, delta=f"{outputs_files} file")
+            with si4:
+                if disk_total_gb:
+                    st.metric("Đĩa trống", f"{disk_free_gb:.1f} GB", delta=f"đã dùng {disk_used_pct}%")
+        except Exception:
+            pass
+
+        st.divider()
+
+        # ----- Cleanup tools -----
+        st.markdown("**Dọn dẹp output**")
+        st.caption(
+            "Xóa file ảnh tạm `outputs/` để giải phóng đĩa. Lịch sử (`history.jsonl`) không bị ảnh hưởng."
+        )
+        cl1, cl2, cl3 = st.columns([1.2, 1.2, 1.6])
+        with cl1:
+            cleanup_days = st.number_input(
+                "Xóa file cũ hơn (ngày)",
+                min_value=1, max_value=365, value=30, step=1,
+                key="cleanup_days_threshold",
+            )
+        with cl2:
+            cleanup_dry = st.toggle("Chỉ xem trước", value=True, key="cleanup_dry_run")
+        with cl3:
+            if st.button("🧹 Quét & xóa", key="btn_config_cleanup_outputs", use_container_width=True):
+                try:
+                    cutoff = time.time() - cleanup_days * 86400
+                    target_root = Path("outputs/history")
+                    candidates: list[Path] = []
+                    if target_root.exists():
+                        for p in target_root.rglob("*"):
+                            if p.is_file():
+                                try:
+                                    if p.stat().st_mtime < cutoff:
+                                        candidates.append(p)
+                                except Exception:
+                                    continue
+                    total_bytes = sum(p.stat().st_size for p in candidates if p.exists())
+                    label_size = (
+                        f"{total_bytes / (1024 ** 3):.2f} GB"
+                        if total_bytes >= 1024 ** 3
+                        else f"{total_bytes / (1024 ** 2):.1f} MB"
+                    )
+                    if cleanup_dry:
+                        st.info(
+                            f"Sẽ xóa {len(candidates)} file ({label_size}) cũ hơn {cleanup_days} ngày trong outputs/history."
+                        )
+                    else:
+                        deleted = 0
+                        for p in candidates:
+                            try:
+                                p.unlink()
+                                deleted += 1
+                            except Exception:
+                                continue
+                        st.success(f"Đã xóa {deleted}/{len(candidates)} file ({label_size}).")
+                except Exception as ex:
+                    st.error(f"Lỗi dọn dẹp: {ex}")
+
+        st.divider()
+        st.markdown("**Shortcut Desktop**")
+        st.caption(
+            "Tạo icon \"Wahu Image Studio\" trên Desktop để mở app bằng 1 cú click, không có cửa sổ cmd đen."
+        )
+        col_sc1, col_sc2 = st.columns([1.2, 1.8])
+        with col_sc1:
+            if st.button("🖥 Tạo shortcut Desktop", use_container_width=True, key="btn_config_create_shortcut"):
+                ps_script = Path(__file__).resolve().parent / "create_desktop_shortcut.ps1"
+                if not ps_script.exists():
+                    st.error(f"Không tìm thấy {ps_script.name}.")
+                else:
+                    try:
+                        result = subprocess.run(
+                            [
+                                "powershell",
+                                "-NoProfile",
+                                "-ExecutionPolicy",
+                                "Bypass",
+                                "-File",
+                                str(ps_script),
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=20,
+                        )
+                        if result.returncode == 0:
+                            st.success("Đã tạo shortcut trên Desktop.")
+                            with st.expander("Chi tiết", expanded=False):
+                                st.code(result.stdout or "")
+                        else:
+                            st.error("Tạo shortcut thất bại.")
+                            st.code((result.stdout or "") + "\n" + (result.stderr or ""))
+                    except Exception as ex:
+                        st.error(f"Không gọi được PowerShell: {ex}")
+        with col_sc2:
+            st.caption(
+                "Hoặc chạy thủ công file `create_desktop_shortcut.bat` trong thư mục cài đặt."
+            )
+
+        st.divider()
+        st.markdown("**Đường dẫn quan trọng**")
+        app_dir = Path(__file__).resolve().parent
+        important_paths = [
+            ("Thư mục app", app_dir),
+            ("Output ảnh", app_dir / "outputs"),
+            ("Lịch sử ảnh (JSONL)", app_dir / "outputs" / "history.jsonl"),
+            ("Lịch sử LoRA (JSONL)", app_dir / "outputs" / "lora_jobs.jsonl"),
+            ("File env", Path(st.session_state.get("env_file", DEFAULT_ENV_FILE))),
+        ]
+        for label, p in important_paths:
+            row1, row2 = st.columns([3.4, 0.9])
+            with row1:
+                st.text_input(label, value=str(p), key=f"util_path_{label}", disabled=True)
+            with row2:
+                if st.button("📂", key=f"btn_util_open_{label}", help="Mở thư mục", use_container_width=True):
+                    try:
+                        target = p if p.is_dir() else p.parent
+                        target.mkdir(parents=True, exist_ok=True)
+                        if sys.platform.startswith("win"):
+                            os.startfile(str(target))  # type: ignore[attr-defined]
+                        else:
+                            subprocess.Popen(["xdg-open", str(target)])
+                        st.toast(f"Đã mở: {target}")
+                    except Exception as ex:
+                        st.error(f"Không mở được: {ex}")
+
+        st.divider()
+        st.markdown("**Reset bộ nhớ phiên**")
+        st.caption(
+            "Xóa toàn bộ session_state nếu app rơi vào trạng thái lạ. Cấu hình .env sẽ được nạp lại từ tệp."
+        )
+        if st.button("🧨 Reset session", key="btn_config_reset_session"):
+            keys = list(st.session_state.keys())
+            for k in keys:
+                del st.session_state[k]
+            st.toast("Đã reset session — đang nạp lại app...")
+            st.rerun()
+
 
 def main() -> None:
     st.set_page_config(
-        page_title="9Router Image Studio Pro",
+        page_title="Wahu Image Studio",
         page_icon="🎨",
         layout="wide",
         initial_sidebar_state="expanded",
     )
     init_state()
+    ensure_runtime_timeout_defaults()
     render_css()
 
     page_name, base_url_raw = sidebar_settings()
@@ -8718,9 +10547,7 @@ def main() -> None:
     if page_name == PAGE_HOME:
         page_home(base_url, api_key)
     elif page_name == PAGE_DRAW:
-        page_generate(base_url, api_key)
-    elif page_name == PAGE_PRESET:
-        page_preset_studio()
+        page_generate_quick(base_url, api_key, bool(st.session_state.get("ui_compact_mode", True)))
     elif page_name == PAGE_TRAIN:
         page_lora_trainer(base_url, api_key)
     elif page_name == PAGE_MODEL:

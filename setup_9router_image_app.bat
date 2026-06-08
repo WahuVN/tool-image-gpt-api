@@ -53,6 +53,6 @@ echo.
 echo Hoan tat setup.
 echo 1) Mo file .env.9router va dien NINEROUTER_URL / NINEROUTER_KEY
 echo 2) Chay WEB: run_9router_image_app.bat
-echo 3) Chay DESKTOP APP: run_artify_desktop_app.bat
+echo 3) Chay DESKTOP APP: run_wahu_desktop_app.bat (1 click tu Desktop sau khi tao shortcut)
 
 endlocal

@@ -14,7 +14,7 @@ if not exist ".env.9router" (
   goto :eof
 )
 
-echo Dang mo Artify AI Desktop App...
-".venv\Scripts\python.exe" artify_desktop_app.py
+echo Dang mo Wahu Image Studio...
+".venv\Scripts\python.exe" wahu_desktop_app.py
 
 endlocal
